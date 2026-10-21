@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { mergeSecrets, saveConfig, validateConfig, type Config } from "../config.js";
-import { addProvider as buildProviderConfig } from "../provider-presets.js";
+import { addProvider as buildProviderConfig, removeProvider as removeProviderConfig } from "../provider-presets.js";
 import { buildEngine, FakeClock, makeConfig, tmpDir, waitForTask } from "./helpers.js";
 import { startWebServer } from "../web/server.js";
 
@@ -56,6 +56,15 @@ async function setup() {
             lifecycle: bucket.window.lifecycle,
           })),
       };
+    },
+    deleteProvider: async (name: string) => {
+      const applied = removeProviderConfig(config, name);
+      validateConfig(applied.config);
+      saveConfig(applied.config, configPath);
+      config = applied.config;
+      engine.reload(config, dir);
+      await engine.observeNow();
+      return { config, provider: applied.provider.name };
     },
     version: "test",
   });
@@ -241,6 +250,69 @@ test("添加 LLM：厂商预设追加 provider，保存后立即可见新桶", a
     assert.match(badVendor.data.error, /暂不支持/);
     const rawAfter = JSON.parse(fs.readFileSync(ctx.configPath, "utf8")) as Config;
     assert.equal(rawAfter.providers.length, 3);
+  } finally {
+    globalThis.fetch = realFetch;
+    await ctx.web.close();
+  }
+});
+
+test("删除 LLM：DELETE /api/providers/:name 移除 provider 并落盘", async () => {
+  const ctx = await setup();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("token_plan/remains")) {
+      return new Response(
+        JSON.stringify({
+          base_resp: { status_code: 0 },
+          model_remains: [
+            {
+              model_name: "general",
+              start_time: ctx.clock.now() - 3600_000,
+              end_time: ctx.clock.now() + 2 * 3600_000,
+              current_interval_status: 1,
+              current_interval_remaining_percent: 77,
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return realFetch(input as Parameters<typeof realFetch>[0], init);
+  }) as unknown as typeof fetch;
+
+  try {
+    const added = await ctx.api("/api/providers", {
+      method: "POST",
+      body: JSON.stringify({ vendor: "minimax", apiKey: "sk-live" }),
+    });
+    assert.equal(added.status, 200, JSON.stringify(added.data));
+    assert.equal(added.data.config.providers.length, 2);
+
+    // 删除不存在的 provider → 400
+    const missing = await ctx.api("/api/providers/nope", { method: "DELETE" });
+    assert.equal(missing.status, 400);
+    assert.match(missing.data.error, /provider 不存在/);
+
+    const deleted = await ctx.api("/api/providers/minimax", { method: "DELETE" });
+    assert.equal(deleted.status, 200, JSON.stringify(deleted.data));
+    assert.equal(deleted.data.provider, "minimax");
+    assert.deepEqual(
+      deleted.data.config.providers.map((p: { name: string }) => p.name),
+      ["mock"],
+    );
+
+    // 配置文件同步落盘
+    const raw = JSON.parse(fs.readFileSync(ctx.configPath, "utf8")) as Config;
+    assert.deepEqual(
+      raw.providers.map((p) => p.name),
+      ["mock"],
+    );
+
+    // 容量页不再有该 provider 的桶
+    const status = await ctx.api("/api/status");
+    assert.equal(status.data.buckets.length, 1);
+    assert.ok(!status.data.buckets.some((b: { shortKey: string }) => b.shortKey.startsWith("minimax/")));
   } finally {
     globalThis.fetch = realFetch;
     await ctx.web.close();

@@ -18,7 +18,7 @@ import {
 import { Engine } from "./engine.js";
 import { HttpBackend, LocalBackend } from "./backend.js";
 import { createMcpServer, serveMcpStdio, VERSION } from "./mcp.js";
-import { addProvider, type AddProviderInput } from "./provider-presets.js";
+import { addProvider, removeProvider, type AddProviderInput } from "./provider-presets.js";
 import { Store } from "./store.js";
 import { deepMerge, log, logError } from "./util.js";
 import { startWebServer, type RunningWebServer, type WebDeps } from "./web/server.js";
@@ -260,6 +260,24 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     };
   };
 
+  // Web「删除 LLM」：移除 provider 及其 models 条目，保存后热加载并重新观测，
+  // 让容量页立刻不再显示该 provider 的桶。
+  const deleteProviderFromWeb: WebDeps["deleteProvider"] = async (name: string) => {
+    const running = engine.store.runningRuns().filter((run) => run.provider === name);
+    if (running.length > 0) {
+      throw new Error(`该 provider 还有 ${running.length} 个在飞任务，请先等待结束或取消后再删除`);
+    }
+    const { config: next, provider } = removeProvider(config, name);
+    const finalized = finalizeConfig(next, loaded.path, baseDir);
+    validateConfig(finalized);
+    saveConfig(finalized, loaded.path);
+    config = finalized;
+    engine.reload(finalized, baseDir);
+    await engine.observeNow();
+    log(`已删除 provider ${provider.name}`);
+    return { config, provider: provider.name };
+  };
+
   if (options.scheduler) engine.start();
 
   if (options.web && config.engine.web.enabled) {
@@ -269,6 +287,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         getConfig: () => config,
         applyConfig,
         addProvider: addProviderFromWeb,
+        deleteProvider: deleteProviderFromWeb,
         version: VERSION,
       });
     } catch (error) {

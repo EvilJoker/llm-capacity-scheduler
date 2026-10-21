@@ -54,6 +54,11 @@ export interface AddProviderResult {
   provider: ProviderConfig;
 }
 
+export interface RemoveProviderResult {
+  config: Config;
+  provider: ProviderConfig;
+}
+
 export function findVendor(id: string): VendorPreset | undefined {
   return VENDOR_PRESETS.find((vendor) => vendor.id === id);
 }
@@ -77,6 +82,17 @@ export function addProvider(config: Config, input: AddProviderInput): AddProvide
   };
   const next: Config = structuredClone(config);
   next.providers = [...next.providers, provider];
+  return { config: next, provider };
+}
+
+/** 纯函数：移除一个 provider（连同它在 models 目录里的条目），返回新配置。 */
+export function removeProvider(config: Config, name: string): RemoveProviderResult {
+  const target = name.trim();
+  const provider = config.providers.find((item) => item.name === target);
+  if (!provider) throw new Error(`provider 不存在: ${target}`);
+  const next: Config = structuredClone(config);
+  next.providers = next.providers.filter((item) => item.name !== target);
+  next.models = next.models.filter((model) => model.provider !== target);
   return { config: next, provider };
 }
 

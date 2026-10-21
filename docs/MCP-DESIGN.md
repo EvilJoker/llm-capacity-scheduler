@@ -216,7 +216,8 @@ GET  /api/health
 GET  /api/config                 # 脱敏
 PUT  /api/config                 # 合并保存 + 热加载；"***" 表示保留旧密钥
 GET  /api/providers/vendors      # 可添加的厂商预设
-POST /api/providers              # {vendor,apiKey,name?} → 追加 provider + model，保存后立即 observe
+POST /api/providers              # {vendor,apiKey,name?} → 追加 provider，保存后立即 observe
+DELETE /api/providers/:name      # 删除 provider（连同 models 条目）；有在飞任务时拒绝
 GET  /api/status                 # buckets + counts + running + recent decisions
 GET  /api/tasks?state=&limit=
 POST /api/tasks                  # 提交
@@ -232,6 +233,8 @@ GET  /api/samples?bucket=&limit=
 避免用户填错导致观测不可信；预设**不带模型版本**。加一家厂商 = 加一个 preset + 一个 adapter；不支持自定义端点。
 同名自动加 `-2` 后缀；`apiKeyEnv`/`apiKeyFile` 显式清空，保证 UI 填的 Key 优先。
 保存后引擎重建 adapter 并立即 `observeNow()`，容量页无需等下一个 tick。
+删除走 `DELETE /api/providers/:name`：移除 provider 与它在 `models` 里的条目，保存后同样立即
+`observeNow()`，容量页不再显示该 provider 的桶；该 provider 还有在飞任务时拒绝删除（避免账目错位）。
 
 ---
 

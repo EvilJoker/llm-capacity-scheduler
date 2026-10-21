@@ -110,7 +110,7 @@ Task ──(Queue 派生视图)──▶ Controller ──(Assignment)──▶ 
 | 概览 | 容量桶卡片（余量/窗口倒计时/reserve 线）、队列/在飞、最近决策原因、手动 tick / 暂停 |
 | 任务 | 提交表单（shell / dsh headless）、任务表、执行记录、产物在线查看、取消 |
 | 容量 | 桶明细 + 采样历史，解释「现在为什么不烧」 |
-| 配置 | 表单 + 原始 JSON 双模式，保存即热加载；Provider 用选项卡管理，「＋ 添加 LLM」按厂商预设接入（当前支持 MiniMax）；API Key 脱敏 |
+| 配置 | 表单 + 原始 JSON 双模式，保存即热加载；Provider 用选项卡管理，「＋ 添加 LLM」按厂商预设接入（当前支持 MiniMax）、「删除」移除该 Key；API Key 脱敏 |
 
 ```bash
 lcs-mcp serve --port 7788          # 配置和命令都支持 --config / --port
@@ -179,7 +179,7 @@ lcs-mcp init                      生成默认配置
 ```bash
 npm install
 npm run build
-npm test                          # node:test，39 个用例（含端到端烧窗口 / Web API / MCP 闭环）
+npm test                          # node:test，40 个用例（含端到端烧窗口 / Web API / MCP 闭环）
 npm run dev -- serve              # tsx 直跑
 ```
 

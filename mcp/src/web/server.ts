@@ -33,11 +33,17 @@ export interface AddProviderResponse {
   buckets: AddedBucketSummary[];
 }
 
+export interface DeleteProviderResponse {
+  config: Config;
+  provider: string;
+}
+
 export interface WebDeps {
   engine: Engine;
   getConfig(): Config;
   applyConfig(next: Config): Promise<Config>;
   addProvider(input: AddProviderInput): Promise<AddProviderResponse>;
+  deleteProvider(name: string): Promise<DeleteProviderResponse>;
   version: string;
 }
 
@@ -191,6 +197,23 @@ async function handleRequest(
       });
     } catch (error) {
       // 校验类错误（缺少 Key / 不支持的厂商 / 配置冲突）回 400，前端直接展示
+      return sendJson(res, 400, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  const providerMatch = /^\/api\/providers\/([^/]+)$/.exec(pathname);
+  if (method === "DELETE" && providerMatch) {
+    const name = decodeURIComponent(providerMatch[1]);
+    try {
+      const result = await deps.deleteProvider(name);
+      return sendJson(res, 200, {
+        ok: true,
+        provider: result.provider,
+        config: redactConfig(result.config),
+      });
+    } catch (error) {
       return sendJson(res, 400, {
         error: error instanceof Error ? error.message : String(error),
       });

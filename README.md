@@ -21,7 +21,8 @@ lcs-mcp serve                               # 调度器 + Web：http://127.0.0.1
 
 接入 provider 不用手改配置：打开 Web → **配置 → Provider → 「＋ 添加 LLM」**，
 选厂商（当前支持 MiniMax）、填 API Key、保存 —— 引擎会立即观测一次，
-切到「容量」页刷新就能看到新桶。也支持手写 `apiKey` / `apiKeyEnv` / `apiKeyFile` 三种方式。
+切到「容量」页刷新就能看到新桶；不用的 Key 点选项卡里的「删除」即可移除。也支持手写
+`apiKey` / `apiKeyEnv` / `apiKeyFile` 三种方式。
 
 ![添加 LLM](docs/images/add-provider.png)
 
@@ -104,7 +105,7 @@ llm-capacity-scheduler/
 │   ├── src/capacity/{minimax,payg,mock}.ts
 │   ├── src/runner/{shell,dsh}.ts
 │   ├── src/web/{server.ts,public/}
-│   ├── src/test/                # 39 个 node:test 用例
+│   ├── src/test/                # 40 个 node:test 用例
 │   └── README.md
 ├── docs/
 │   ├── MCP-DESIGN.md            # v0.2 定稿：6 实体模型 / 队列语义 / MCP+Web 架构
@@ -120,7 +121,7 @@ llm-capacity-scheduler/
 cd mcp
 npm install
 npm run build
-npm test        # 39 个用例：策略 / 存储 / adapter / 引擎 e2e / Web API / MCP 闭环
+npm test        # 40 个用例：策略 / 存储 / adapter / 引擎 e2e / Web API / MCP 闭环
 npm run dev -- serve
 ```
 

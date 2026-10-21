@@ -517,6 +517,10 @@ function renderConfigForm() {
       }
       return `
         <div class="prov-pane${index === 0 ? " active" : ""}" data-ppane="${index}">
+          <div class="prov-pane-head">
+            <span class="mono">${esc(provider.name)} · ${esc(provider.kind)}</span>
+            <button type="button" class="btn danger" data-del-provider="${esc(provider.name)}">删除</button>
+          </div>
           ${cfgCheck(`${base}.enabled`, "启用")}
           ${cfgPath(`${base}.name`, "名称")}
           ${cfgPath(`${base}.kind`, "kind（minimax/payg/mock）")}
@@ -701,6 +705,22 @@ async function saveProvider() {
   }
 }
 
+async function deleteProvider(name) {
+  if (!window.confirm(`确定删除 provider「${name}」？\n它的 API Key 与容量桶都会被移除（历史任务记录保留）。`)) return;
+  try {
+    const result = await api(`/api/providers/${encodeURIComponent(name)}`, { method: "DELETE" });
+    state.config = result.config;
+    renderConfigForm();
+    const providers = result.config.providers || [];
+    activateProviderTab(providers.length > 0 ? 0 : -1);
+    toast(`已删除 ${result.provider}\n容量页刷新后不再显示它的桶`);
+    await refreshStatus();
+    if (document.getElementById("tab-capacity").classList.contains("active")) await refreshSamples();
+  } catch (error) {
+    fail(error);
+  }
+}
+
 // --------------------------------------------------------------------- 初始化
 
 function activateTab(name) {
@@ -781,8 +801,13 @@ function bindEvents() {
     }
   });
 
-  // Provider 选项卡 & 添加 LLM（#config-form 会被重渲染，所以用事件委托）
+  // Provider 选项卡 & 添加/删除 LLM（#config-form 会被重渲染，所以用事件委托）
   $("config-form").addEventListener("click", (event) => {
+    const del = event.target.closest("[data-del-provider]");
+    if (del) {
+      void deleteProvider(del.dataset.delProvider);
+      return;
+    }
     const tab = event.target.closest("[data-ptab]");
     if (tab) {
       activateProviderTab(Number(tab.dataset.ptab));
