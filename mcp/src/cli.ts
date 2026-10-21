@@ -18,9 +18,10 @@ import {
 import { Engine } from "./engine.js";
 import { HttpBackend, LocalBackend } from "./backend.js";
 import { createMcpServer, serveMcpStdio, VERSION } from "./mcp.js";
+import { addProvider, type AddProviderInput } from "./provider-presets.js";
 import { Store } from "./store.js";
 import { deepMerge, log, logError } from "./util.js";
-import { startWebServer, type RunningWebServer } from "./web/server.js";
+import { startWebServer, type RunningWebServer, type WebDeps } from "./web/server.js";
 
 interface CliOptions {
   command: "mcp" | "serve" | "init";
@@ -232,6 +233,33 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     return next;
   };
 
+  // Web「添加 LLM」：按厂商预设追加 provider + model，保存后热加载并立刻观测一次，
+  // 这样切换「容量」页时新桶已经在 lastBuckets 里，无需等下一个 tick。
+  const addProviderFromWeb: WebDeps["addProvider"] = async (input: AddProviderInput) => {
+    const { config: next, provider } = addProvider(config, input);
+    const finalized = finalizeConfig(next, loaded.path, baseDir);
+    validateConfig(finalized);
+    saveConfig(finalized, loaded.path);
+    config = finalized;
+    engine.reload(finalized, baseDir);
+    const buckets = await engine.observeNow();
+    const mine = buckets.filter((bucket) => bucket.provider === provider.name);
+    log(`已添加 provider ${provider.name}（已观测 ${mine.length} 个桶）`);
+    return {
+      config,
+      provider: provider.name,
+      buckets: mine.map((bucket) => ({
+        provider: bucket.provider,
+        modelFamily: bucket.modelFamily,
+        resourceKind: bucket.resourceKind,
+        remaining: bucket.remaining,
+        unit: bucket.unit,
+        source: bucket.source,
+        lifecycle: bucket.window.lifecycle,
+      })),
+    };
+  };
+
   if (options.scheduler) engine.start();
 
   if (options.web && config.engine.web.enabled) {
@@ -240,6 +268,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         engine,
         getConfig: () => config,
         applyConfig,
+        addProvider: addProviderFromWeb,
         version: VERSION,
       });
     } catch (error) {
@@ -258,8 +287,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     process.stdin.on("close", () => void shutdown("stdin close"));
   } else {
     log(`运行中：scheduler=${options.scheduler ? "on" : "off"} web=${web ? web.url : "off"}（Ctrl-C 退出）`);
-    // 保持进程存活
-    setInterval(() => {}, 1 << 30).unref?.();
+    // 保持进程存活（不能 unref：没有 Web/MCP 时 event loop 不能提前退出）
+    setInterval(() => {}, 1 << 30);
   }
 }
 

@@ -16,9 +16,14 @@
 ```bash
 npm install -g llm-capacity-scheduler-mcp   # Node.js >= 20
 lcs-mcp init                                # 生成 ~/.lcs/config.json
-# 填好 provider 的 API Key（或 MINIMAX_API_KEY / ~/.mmx/config.json）
 lcs-mcp serve                               # 调度器 + Web：http://127.0.0.1:7788
 ```
+
+接入 provider 不用手改配置：打开 Web → **配置 → Provider → 「＋ 添加 LLM」**，
+选厂商（当前支持 MiniMax）、填 API Key、保存 —— 引擎会立即观测一次，
+切到「容量」页刷新就能看到新桶。也支持手写 `apiKey` / `apiKeyEnv` / `apiKeyFile` 三种方式。
+
+![添加 LLM](docs/images/add-provider.png)
 
 agent 侧在 MCP 客户端里加一条 stdio server：
 
@@ -95,11 +100,11 @@ runner × est × route）、**Queue**（任务状态的派生视图，不是独�
 ```
 llm-capacity-scheduler/
 ├── mcp/                         # 产品：npm 包（MCP Server + Web 控制台 + 调度器）
-│   ├── src/{engine,policy,store,backend,mcp,cli}.ts
+│   ├── src/{engine,policy,store,backend,mcp,cli,provider-presets}.ts
 │   ├── src/capacity/{minimax,payg,mock}.ts
 │   ├── src/runner/{shell,dsh}.ts
 │   ├── src/web/{server.ts,public/}
-│   ├── src/test/                # 38 个 node:test 用例
+│   ├── src/test/                # 39 个 node:test 用例
 │   └── README.md
 ├── docs/
 │   ├── MCP-DESIGN.md            # v0.2 定稿：6 实体模型 / 队列语义 / MCP+Web 架构
@@ -115,7 +120,7 @@ llm-capacity-scheduler/
 cd mcp
 npm install
 npm run build
-npm test        # 38 个用例：策略 / 存储 / adapter / 引擎 e2e / Web API / MCP 闭环
+npm test        # 39 个用例：策略 / 存储 / adapter / 引擎 e2e / Web API / MCP 闭环
 npm run dev -- serve
 ```
 

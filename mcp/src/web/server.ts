@@ -14,12 +14,30 @@ import { redactConfig, type Config } from "../config.js";
 import type { Engine } from "../engine.js";
 import { describeBucket, type Task } from "../types.js";
 import { buildTaskFromInput } from "../task-input.js";
+import { VENDOR_PRESETS, type AddProviderInput } from "../provider-presets.js";
 import { log, logError } from "../util.js";
+
+export interface AddedBucketSummary {
+  provider: string;
+  modelFamily: string;
+  resourceKind: string;
+  remaining: number | null;
+  unit: string;
+  source: string;
+  lifecycle: string;
+}
+
+export interface AddProviderResponse {
+  config: Config;
+  provider: string;
+  buckets: AddedBucketSummary[];
+}
 
 export interface WebDeps {
   engine: Engine;
   getConfig(): Config;
   applyConfig(next: Config): Promise<Config>;
+  addProvider(input: AddProviderInput): Promise<AddProviderResponse>;
   version: string;
 }
 
@@ -146,6 +164,37 @@ async function handleRequest(
     const body = JSON.parse(await readBody(req)) as Config;
     const saved = await deps.applyConfig(body);
     return sendJson(res, 200, { ok: true, config: redactConfig(saved) });
+  }
+
+  // ---------------------------------------------------------------- providers
+  if (method === "GET" && pathname === "/api/providers/vendors") {
+    return sendJson(
+      res,
+      200,
+      VENDOR_PRESETS.map((vendor) => ({ id: vendor.id, label: vendor.label })),
+    );
+  }
+  if (method === "POST" && pathname === "/api/providers") {
+    let body: AddProviderInput;
+    try {
+      body = JSON.parse(await readBody(req)) as AddProviderInput;
+    } catch {
+      return sendJson(res, 400, { error: "请求体不是合法 JSON" });
+    }
+    try {
+      const result = await deps.addProvider(body);
+      return sendJson(res, 200, {
+        ok: true,
+        provider: result.provider,
+        config: redactConfig(result.config),
+        buckets: result.buckets,
+      });
+    } catch (error) {
+      // 校验类错误（缺少 Key / 不支持的厂商 / 配置冲突）回 400，前端直接展示
+      return sendJson(res, 400, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   // ---------------------------------------------------------------- tasks

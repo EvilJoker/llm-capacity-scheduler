@@ -152,6 +152,38 @@
       </section>
     </main>
 
+    <!-- 添加 LLM：只暴露厂商 + API Key，其余字段由后端厂商预设生成 -->
+    <div id="provider-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="provider-modal-title">
+      <div class="modal-card">
+        <div class="panel-head">
+          <h2 id="provider-modal-title">添加 LLM</h2>
+          <button id="btn-close-provider" class="btn ghost" type="button">✕</button>
+        </div>
+        <div class="form-grid modal-form">
+          <label>厂商
+            <select id="p-vendor" name="vendor">
+              <option value="minimax">MiniMax（MiniMax-M2.2 · general）</option>
+            </select>
+          </label>
+          <label>名称（可选，用于区分多个 Key）
+            <input id="p-name" name="name" placeholder="留空自动：minimax / minimax-2" />
+          </label>
+          <label class="span2">API Key
+            <input id="p-apikey" name="apiKey" type="password" autocomplete="off"
+                   placeholder="MiniMax Subscription Key（只保存在本机配置文件，0600）" />
+          </label>
+          <p class="hint span2">
+            保存后会写入配置并立即观测一次，切到「容量」页刷新即可看到新桶。
+            暂不支持自定义厂商与端点，其他厂商后续按需接入。
+          </p>
+        </div>
+        <div class="actions">
+          <button id="btn-save-provider" class="btn primary" type="button">保存</button>
+          <button id="btn-cancel-provider" class="btn ghost" type="button">取消</button>
+        </div>
+      </div>
+    </div>
+
     <div id="toast" class="toast"></div>
     <script src="/app.js"></script>
   </body>

@@ -1,10 +1,12 @@
 /** Web 控制台 API：状态 / 提交 / tick / 产物 / 配置热加载与密钥脱敏。 */
 
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
 import { mergeSecrets, saveConfig, validateConfig, type Config } from "../config.js";
+import { addProvider as buildProviderConfig } from "../provider-presets.js";
 import { buildEngine, FakeClock, makeConfig, tmpDir, waitForTask } from "./helpers.js";
 import { startWebServer } from "../web/server.js";
 
@@ -31,6 +33,29 @@ async function setup() {
       config = next;
       engine.reload(next, dir);
       return next;
+    },
+    addProvider: async (input) => {
+      const applied = buildProviderConfig(config, input);
+      validateConfig(applied.config);
+      saveConfig(applied.config, configPath);
+      config = applied.config;
+      engine.reload(config, dir);
+      const buckets = await engine.observeNow();
+      return {
+        config,
+        provider: applied.provider.name,
+        buckets: buckets
+          .filter((bucket) => bucket.provider === applied.provider.name)
+          .map((bucket) => ({
+            provider: bucket.provider,
+            modelFamily: bucket.modelFamily,
+            resourceKind: bucket.resourceKind,
+            remaining: bucket.remaining,
+            unit: bucket.unit,
+            source: bucket.source,
+            lifecycle: bucket.window.lifecycle,
+          })),
+      };
     },
     version: "test",
   });
@@ -132,6 +157,91 @@ test("调度器暂停/恢复", async () => {
     const resumed = await ctx.api("/api/status");
     assert.equal(resumed.data.scheduler.paused, false);
   } finally {
+    await ctx.web.close();
+  }
+});
+
+test("添加 LLM：厂商预设追加 provider，保存后立即可见新桶", async () => {
+  const ctx = await setup();
+  const realFetch = globalThis.fetch;
+  // 只拦截 MiniMax 容量接口，其余（本地 Web API）走真实 fetch
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("token_plan/remains")) {
+      return new Response(
+        JSON.stringify({
+          base_resp: { status_code: 0 },
+          model_remains: [
+            {
+              model_name: "general",
+              start_time: ctx.clock.now() - 3600_000,
+              end_time: ctx.clock.now() + 2 * 3600_000,
+              current_interval_status: 1,
+              current_interval_remaining_percent: 77,
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return realFetch(input as Parameters<typeof realFetch>[0], init);
+  }) as unknown as typeof fetch;
+
+  try {
+    const vendors = await ctx.api("/api/providers/vendors");
+    assert.deepEqual(vendors.data, [{ id: "minimax", label: "MiniMax" }]);
+
+    const added = await ctx.api("/api/providers", {
+      method: "POST",
+      body: JSON.stringify({ vendor: "minimax", apiKey: "sk-live" }),
+    });
+    assert.equal(added.status, 200, JSON.stringify(added.data));
+    assert.equal(added.data.provider, "minimax");
+    assert.equal(added.data.config.providers.length, 2);
+    assert.equal(added.data.config.providers[1].options.apiKey, "***");
+    assert.equal(added.data.config.providers[1].options.apiKeyEnv, "");
+    assert.ok(added.data.config.models.some((m: { provider: string }) => m.provider === "minimax"));
+    assert.equal(added.data.buckets.length, 1);
+    assert.equal(added.data.buckets[0].source, "api");
+    assert.equal(added.data.buckets[0].remaining, 77);
+    assert.equal(added.data.buckets[0].lifecycle, "fixed_grid");
+
+    // 容量页数据（snapshot）已经包含新桶，无需等下一次 tick
+    const status = await ctx.api("/api/status");
+    assert.equal(status.data.buckets.length, 2);
+    assert.ok(status.data.buckets.some((b: { shortKey: string }) => b.shortKey.startsWith("minimax/")));
+
+    // 配置文件里存的是明文 Key（0600），GET 永远脱敏
+    const raw = JSON.parse(fs.readFileSync(ctx.configPath, "utf8")) as Config;
+    assert.equal(raw.providers[1].options.apiKey, "sk-live");
+    assert.equal((fs.statSync(ctx.configPath).mode & 0o777).toString(8), "600");
+    assert.equal((await ctx.api("/api/config")).data.providers[1].options.apiKey, "***");
+
+    // 重名自动加后缀
+    const again = await ctx.api("/api/providers", {
+      method: "POST",
+      body: JSON.stringify({ vendor: "minimax", apiKey: "sk-2" }),
+    });
+    assert.equal(again.status, 200);
+    assert.equal(again.data.provider, "minimax-2");
+
+    // 缺 Key / 未知厂商 → 400，且不落盘
+    const noKey = await ctx.api("/api/providers", {
+      method: "POST",
+      body: JSON.stringify({ vendor: "minimax", apiKey: "  " }),
+    });
+    assert.equal(noKey.status, 400);
+    assert.match(noKey.data.error, /API Key/);
+    const badVendor = await ctx.api("/api/providers", {
+      method: "POST",
+      body: JSON.stringify({ vendor: "openai", apiKey: "sk-x" }),
+    });
+    assert.equal(badVendor.status, 400);
+    assert.match(badVendor.data.error, /暂不支持/);
+    const rawAfter = JSON.parse(fs.readFileSync(ctx.configPath, "utf8")) as Config;
+    assert.equal(rawAfter.providers.length, 3);
+  } finally {
+    globalThis.fetch = realFetch;
     await ctx.web.close();
   }
 });

@@ -203,7 +203,7 @@ interface Runner {
 | **概览** | 容量桶卡片（余量、窗口倒计时、reserve 线）、队列/在飞计数、最近决策原因、调度器开关与手动 tick |
 | **任务** | 提交表单（cmd/prompt、价值、token、deadline、产物、verifier）+ 任务表（状态徽章、产物链接、取消） |
 | **容量** | 采样历史表 + 各桶时间线，解释“现在为什么不烧” |
-| **配置** | 表单（provider/policy/engine/runner）+ 原始 JSON 高级编辑；保存即写配置并热加载；密钥脱敏 |
+| **配置** | 表单（provider/policy/engine/runner）+ 原始 JSON 高级编辑；保存即写配置并热加载；密钥脱敏。Provider 用选项卡管理，`＋ 添加 LLM` 按厂商预设接入（当前仅 MiniMax） |
 
 REST（同端口）：
 
@@ -211,6 +211,8 @@ REST（同端口）：
 GET  /api/health
 GET  /api/config                 # 脱敏
 PUT  /api/config                 # 合并保存 + 热加载；"***" 表示保留旧密钥
+GET  /api/providers/vendors      # 可添加的厂商预设
+POST /api/providers              # {vendor,apiKey,name?} → 追加 provider + model，保存后立即 observe
 GET  /api/status                 # buckets + counts + running + recent decisions
 GET  /api/tasks?state=&limit=
 POST /api/tasks                  # 提交
@@ -220,6 +222,12 @@ POST /api/tick                   # 手动 tick
 POST /api/scheduler/pause|resume
 GET  /api/samples?bucket=&limit=
 ```
+
+**Provider 预设**（`src/provider-presets.ts`）：`POST /api/providers` 只接受
+`vendor + apiKey (+可选 name)`，端点、`families`、换算率、能力目录条目均由预设生成，
+避免用户填错导致观测不可信。加一家厂商 = 加一个 preset + 一个 adapter；不支持自定义端点。
+同名自动加 `-2` 后缀；`apiKeyEnv`/`apiKeyFile` 显式清空，保证 UI 填的 Key 优先。
+保存后引擎重建 adapter 并立即 `observeNow()`，容量页无需等下一个 tick。
 
 ---
 

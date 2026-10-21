@@ -490,7 +490,16 @@ function cfgSelect(path, label, pairs) {
 function renderConfigForm() {
   const config = state.config;
   if (!config) return;
-  const providerBlocks = (config.providers || [])
+  const providers = config.providers || [];
+  const providerTabs = providers
+    .map(
+      (provider, index) => `
+        <button type="button" class="prov-tab${index === 0 ? " active" : ""}" data-ptab="${index}">
+          ${esc(provider.name)}<span class="hint">${esc(provider.kind)}</span>
+        </button>`,
+    )
+    .join("");
+  const providerPanes = providers
     .map((provider, index) => {
       const base = `providers.${index}`;
       let extra = "";
@@ -507,13 +516,12 @@ function renderConfigForm() {
           ${cfgPath(`${base}.options.unitPricePer1kTokens`, "单价 / 1k token", "number", { step: "0.0001" })}`;
       }
       return `
-        <div class="span3" style="border-top:1px solid var(--border);padding-top:10px;margin-top:4px">
-          <div class="panel-head"><h2>Provider: ${esc(provider.name)} <span class="hint">${esc(provider.kind)}</span></h2></div>
-        </div>
-        ${cfgCheck(`${base}.enabled`, "启用")}
-        ${cfgPath(`${base}.name`, "名称")}
-        ${cfgPath(`${base}.kind`, "kind（minimax/payg/mock）")}
-        ${extra}`;
+        <div class="prov-pane${index === 0 ? " active" : ""}" data-ppane="${index}">
+          ${cfgCheck(`${base}.enabled`, "启用")}
+          ${cfgPath(`${base}.name`, "名称")}
+          ${cfgPath(`${base}.kind`, "kind（minimax/payg/mock）")}
+          ${extra}
+        </div>`;
     })
     .join("");
 
@@ -546,8 +554,19 @@ function renderConfigForm() {
     ${cfgPath("runners.dsh.command", "dsh 命令")}
     ${cfgPath("runners.dsh.profile", "dsh profile")}
 
-    <div class="span3" style="border-top:1px solid var(--border);padding-top:10px;margin-top:4px"><h2>Provider</h2></div>
-    ${providerBlocks}
+    <div class="span3 prov-head">
+      <h2>Provider</h2>
+      <div class="row-actions">
+        <span class="hint">每加一个 Key = 多一组容量桶</span>
+        <button type="button" id="btn-add-provider" class="btn primary">＋ 添加 LLM</button>
+      </div>
+    </div>
+    ${
+      providers.length
+        ? `<div class="span3 prov-tabs" id="provider-tabs">${providerTabs}</div>
+           <div class="span3 prov-panes" id="provider-panes">${providerPanes}</div>`
+        : `<div class="span3 empty">还没有 provider：点击右上角「＋ 添加 LLM」接入。</div>`
+    }
   `;
   // 回填
   for (const el of $("config-form").querySelectorAll("[data-path]")) {
@@ -618,6 +637,67 @@ async function saveConfig(config) {
     await refreshStatus();
   } catch (error) {
     fail(error);
+  }
+}
+
+// ------------------------------------------------------------ 添加 LLM（Provider）
+
+function activateProviderTab(index) {
+  const root = $("config-form");
+  if (!root) return;
+  root
+    .querySelectorAll("[data-ptab]")
+    .forEach((el) => el.classList.toggle("active", Number(el.dataset.ptab) === index));
+  root
+    .querySelectorAll("[data-ppane]")
+    .forEach((el) => el.classList.toggle("active", Number(el.dataset.ppane) === index));
+}
+
+function openProviderModal() {
+  $("p-name").value = "";
+  $("p-apikey").value = "";
+  $("p-vendor").selectedIndex = 0;
+  $("provider-modal").classList.remove("hidden");
+  $("p-apikey").focus();
+}
+
+function closeProviderModal() {
+  $("provider-modal").classList.add("hidden");
+}
+
+async function saveProvider() {
+  const vendor = $("p-vendor").value;
+  const apiKey = $("p-apikey").value.trim();
+  const name = $("p-name").value.trim();
+  if (!apiKey) {
+    toast("请填写 API Key", true);
+    $("p-apikey").focus();
+    return;
+  }
+  $("btn-save-provider").disabled = true;
+  try {
+    const result = await api("/api/providers", {
+      method: "POST",
+      body: JSON.stringify({ vendor, apiKey, name: name || undefined }),
+    });
+    state.config = result.config;
+    renderConfigForm();
+    closeProviderModal();
+    activateProviderTab((result.config.providers || []).length - 1);
+    const buckets = (result.buckets || []).map((b) => {
+      const value = b.remaining === null ? "?" : Number(b.remaining).toFixed(1);
+      const suffix = b.unit === "pct" ? "%" : ` ${b.unit}`;
+      return `${b.provider}/${b.modelFamily}/${b.resourceKind} = ${value}${suffix}（${b.source}）`;
+    });
+    toast(
+      `已添加 ${result.provider}${buckets.length ? `\n新桶：${buckets.join("；")}` : "\n暂未观测到桶，检查 Key 后到容量页点「立即观测」"}\n切到「容量」页刷新即可看到`,
+    );
+    await refreshStatus();
+    if (document.getElementById("tab-capacity").classList.contains("active")) await refreshSamples();
+  } catch (error) {
+    fail(error);
+  } finally {
+    $("btn-save-provider").disabled = false;
   }
 }
 
@@ -699,6 +779,31 @@ function bindEvents() {
     } catch (error) {
       fail(error);
     }
+  });
+
+  // Provider 选项卡 & 添加 LLM（#config-form 会被重渲染，所以用事件委托）
+  $("config-form").addEventListener("click", (event) => {
+    const tab = event.target.closest("[data-ptab]");
+    if (tab) {
+      activateProviderTab(Number(tab.dataset.ptab));
+      return;
+    }
+    if (event.target.closest("#btn-add-provider")) openProviderModal();
+  });
+  $("btn-save-provider").addEventListener("click", () => void saveProvider());
+  $("btn-cancel-provider").addEventListener("click", closeProviderModal);
+  $("btn-close-provider").addEventListener("click", closeProviderModal);
+  $("provider-modal").addEventListener("click", (event) => {
+    if (event.target === $("provider-modal")) closeProviderModal();
+  });
+  $("p-apikey").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void saveProvider();
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !$("provider-modal").classList.contains("hidden")) closeProviderModal();
   });
 }
 
