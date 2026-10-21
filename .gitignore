@@ -1,0 +1,26 @@
+# 本地执行状态 / 接续文档，不入库
+TASK.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# 运行时产物
+artifacts/
+*.db
+*.sqlite
+*.sqlite3
+state.json
+logs/
+.runtime/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
