@@ -130,12 +130,12 @@ Provider（谁的额度）  ×  Runner（怎么跑）  = 两个正交轴
   "assignmentId": "asg_...",
   "taskId": "task_...",
   "provider": "minimax",
-  "model": "MiniMax-M2.2",
+  "model": "general",
   "runner": "dsh-headless",
   "est": 4.5,
   "route": {
     "LCS_PROVIDER": "minimax",
-    "LCS_MODEL": "MiniMax-M2.2",
+    "LCS_MODEL": "general",
     "LCS_ASSIGNMENT_ID": "asg_..."
   }
 }
@@ -143,7 +143,9 @@ Provider（谁的额度）  ×  Runner（怎么跑）  = 两个正交轴
 
 - shell runner：`route` 注入为环境变量；
 - dsh runner：`route` 注入环境变量 + 可选 `--profile` 映射（`runners.dsh.profiles: {minimax: "headless"}`）；
-- 任务里用 `$LCS_PROVIDER` / `$LCS_MODEL` 选择实际调用的后端，保证「控制器以为的」和「真实消耗的」是同一个桶。
+- 任务里用 `$LCS_PROVIDER` / `$LCS_MODEL` 选择实际调用的后端，保证「控制器以为的」和「真实消耗的」是同一个桶；
+- `model` 优先取 `models[]` 的能力匹配结果，没有配置时退化为 **family**（配额本来就是按 family 计的），
+  这样不会把会过期的模型版本号固化进配置或厂商预设。
 
 ---
 
@@ -154,8 +156,10 @@ Provider（谁的额度）  ×  Runner（怎么跑）  = 两个正交轴
 | **能力匹配** | 能不能干这活 | `models[]`：provider / model / family / context / modalities / qualityTier / price |
 | **容量可用** | 现在该不该烧 | `providers[]` 的容量桶 + reserve |
 
-`dispatch` 先按能力筛候选 `(provider, model)`，再对容量桶做准入。没有 catalog 条目时
-退化为 `provider.defaultModel || family`，保证零配置也能跑。
+`dispatch` 先按能力筛候选 `(provider, model)`，再对容量桶做准入。**`models` 默认为空**：
+没有 catalog 条目时退化为 `provider.defaultModel || family`，保证零配置也能跑。
+配额按 family 计，模型版本不该由调度器硬编码；需要按 context / qualityTier 精确匹配时
+再在 `models` 里手填（加一家厂商的预设也不会自动塞模型版本）。
 
 ---
 
@@ -224,8 +228,8 @@ GET  /api/samples?bucket=&limit=
 ```
 
 **Provider 预设**（`src/provider-presets.ts`）：`POST /api/providers` 只接受
-`vendor + apiKey (+可选 name)`，端点、`families`、换算率、能力目录条目均由预设生成，
-避免用户填错导致观测不可信。加一家厂商 = 加一个 preset + 一个 adapter；不支持自定义端点。
+`vendor + apiKey (+可选 name)`，端点、`families`、换算率由预设生成，
+避免用户填错导致观测不可信；预设**不带模型版本**。加一家厂商 = 加一个 preset + 一个 adapter；不支持自定义端点。
 同名自动加 `-2` 后缀；`apiKeyEnv`/`apiKeyFile` 显式清空，保证 UI 填的 Key 优先。
 保存后引擎重建 adapter 并立即 `observeNow()`，容量页无需等下一个 tick。
 

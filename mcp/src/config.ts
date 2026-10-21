@@ -175,17 +175,9 @@ export function defaultConfig(): Config {
         },
       },
     ],
-    models: [
-      {
-        provider: "minimax",
-        model: "MiniMax-M2.2",
-        family: "general",
-        context: 200000,
-        modalities: ["text"],
-        qualityTier: "best",
-        unitPricePer1kTokens: 0,
-      },
-    ],
+    // 能力目录默认留空：配额按模型族计，具体模型由执行器决定。
+    // 需要按 context / qualityTier 精确匹配时再手填 models（见 docs/MCP-DESIGN.md）。
+    models: [],
     runners: {
       default: "shell",
       shell: { enabled: true },

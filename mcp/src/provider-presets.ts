@@ -2,10 +2,12 @@
  * Provider 预设：Web「添加 LLM」只让用户选厂商 + 填 API Key，其余字段由预设生成。
  *
  * 这是「不支持自定义 provider」阶段的唯一扩展点：加一家厂商 = 加一个 preset + 一个 adapter。
- * 预设里写死端点/换算率等出厂参数，避免用户在 UI 里填错导致观测不可信。
+ * 预设里只写 provider 级的出厂参数（端点/families/换算率），不写模型版本：
+ * 配额是按「模型族」计的，具体模型由执行器或 models catalog 决定，避免把会过期的
+ * 版本号（如 MiniMax-M2.2）固化进配置。
  */
 
-import type { Config, ModelConfig, ProviderConfig } from "./config.js";
+import type { Config, ProviderConfig } from "./config.js";
 
 export interface VendorPreset {
   /** 厂商标识，前端 option value 与后端校验共用 */
@@ -16,8 +18,6 @@ export interface VendorPreset {
   defaultName: string;
   /** 该厂商默认观测的模型族 */
   families: string[];
-  /** 追加到 models catalog 的条目（provider 字段运行时填充） */
-  models: Omit<ModelConfig, "provider">[];
   buildOptions(apiKey: string): Record<string, unknown>;
 }
 
@@ -28,16 +28,6 @@ export const VENDOR_PRESETS: VendorPreset[] = [
     kind: "minimax",
     defaultName: "minimax",
     families: ["general"],
-    models: [
-      {
-        model: "MiniMax-M2.2",
-        family: "general",
-        context: 200000,
-        modalities: ["text"],
-        qualityTier: "best",
-        unitPricePer1kTokens: 0,
-      },
-    ],
     buildOptions: (apiKey) => ({
       apiKey,
       // 显式清空 env/file：用户在 UI 填的 Key 优先，避免被同名环境变量覆盖
@@ -68,7 +58,7 @@ export function findVendor(id: string): VendorPreset | undefined {
   return VENDOR_PRESETS.find((vendor) => vendor.id === id);
 }
 
-/** 纯函数：返回追加了 provider 与其 model catalog 的新配置（不落盘、不校验）。 */
+/** 纯函数：返回追加了 provider 的新配置（不落盘、不校验）。 */
 export function addProvider(config: Config, input: AddProviderInput): AddProviderResult {
   const vendor = findVendor(String(input.vendor ?? "").trim());
   if (!vendor) {
@@ -87,7 +77,6 @@ export function addProvider(config: Config, input: AddProviderInput): AddProvide
   };
   const next: Config = structuredClone(config);
   next.providers = [...next.providers, provider];
-  next.models = [...next.models, ...vendor.models.map((model) => ({ ...model, provider: name }))];
   return { config: next, provider };
 }
 

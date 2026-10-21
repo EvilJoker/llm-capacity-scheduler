@@ -200,7 +200,8 @@ test("添加 LLM：厂商预设追加 provider，保存后立即可见新桶", a
     assert.equal(added.data.config.providers.length, 2);
     assert.equal(added.data.config.providers[1].options.apiKey, "***");
     assert.equal(added.data.config.providers[1].options.apiKeyEnv, "");
-    assert.ok(added.data.config.models.some((m: { provider: string }) => m.provider === "minimax"));
+    // 预设不写模型版本：能力目录保持为空，运行时退化为 family
+    assert.equal(added.data.config.models.length, 0);
     assert.equal(added.data.buckets.length, 1);
     assert.equal(added.data.buckets[0].source, "api");
     assert.equal(added.data.buckets[0].remaining, 77);
