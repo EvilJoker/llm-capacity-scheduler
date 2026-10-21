@@ -69,29 +69,84 @@ MiniMax 只是**第一个具体实现**（provider adapter），不是框架本�
 | **v0.2** | MCP / HTTP 工具化（agent 可直接调）、消耗校准 + canary、verifier | agent 能通过工具 submit 并取回结果 |
 | **v0.3** | 第三个 adapter（`rolling_on_first_use`，Claude）**用于证伪抽象**；intensity 档位；只读面板 | 加第三家 provider 时只改 adapter，**不改 policy** |
 
-## 目录规划
+## 目录
 
 ```
 llm-capacity-scheduler/
-├── README.md              # 本文件：定位、概念、里程碑
-├── TASK.md                # 执行状态与决策记录（gitignore，仅供 agent 接续）
+├── README.md                    # 本文件：定位、概念、里程碑、用法
+├── TASK.md                      # 执行状态与决策记录（gitignore，仅供 agent 接续）
+├── config.toml                  # 本地配置（gitignore；`lcs init-config` 生成）
 ├── docs/
-│   ├── DESIGN.md          # 详细设计：容量模型 / reserve / 架构 / 数据模型 / API
-│   └── PRIOR-ART.md       # 现有项目对照，避免重复造轮子
-└── src/                   # （v0.1 待建）
-    ├── capacity/          # provider adapters
-    ├── policy/            # reserve 函数 + 准入控制
-    ├── taskstore/         # SQLite 状态机
-    ├── runner/            # 执行器
-    └── api/               # CLI / HTTP / MCP
+│   ├── DESIGN.md                # 详细设计：容量模型 / reserve / 架构 / 数据模型 / API
+│   └── PRIOR-ART.md             # 现有项目对照，避免重复造轮子
+├── src/lcs/
+│   ├── models.py                # Bucket / Window / Task / Run / TaskSpec
+│   ├── config.py                # TOML 配置（stdlib tomllib，零依赖）
+│   ├── capacity/                # 扩展点 A：provider 容量观测
+│   │   ├── base.py              #   Adapter 契约（失败 → source=unknown）
+│   │   ├── minimax.py           #   fixed_grid + weekly unlimited
+│   │   ├── payg.py              #   depleting 余额（性质相反的第二个实现）
+│   │   └── registry.py          #   kind → adapter
+│   ├── policy/                  # 准入控制（内核）
+│   │   ├── schedule.py          #   工作时间表 / 自用率积分 / 高峰窗口
+│   │   ├── reserve.py           #   reserve(t) = 未来预期自用量
+│   │   └── admission.py         #   burn_before_expiry + 强度映射
+│   ├── taskstore/store.py       # SQLite：状态机 / 幂等键 / 采样 / EWMA 校准
+│   ├── runner/                  # 扩展点 B：执行器
+│   │   ├── base.py              #   Runner 契约
+│   │   └── shell.py             #   shell 执行 + 产物目录 + verifier
+│   ├── engine.py                # tick + reconcile 主循环
+│   └── api/cli.py               # submit / poll / status / observe / tick / run
+└── tests/                       # pytest：reserve / admission / store / adapter / e2e
 ```
 
-## 起点
+## 快速开始
 
 ```bash
 cd ~/github/llm-capacity-scheduler
-cat docs/DESIGN.md    # 先读设计
-cat TASK.md           # 再看当前进度与下一步
+python3 -m pip install -e .        # 零运行时依赖；需要 Python 3.11+
+lcs init-config                    # 生成 config.toml（含 MiniMax 接入示例）
+
+lcs observe                        # 只读一次容量快照（不消耗配额）
+lcs submit --cmd "python3 job.py" --value 70 --tokens 120000 \
+           --deadline 2026-10-22T09:00 --expect-artifact out.json
+lcs tick                           # 执行一次 tick（准入 + 派发 + 收口）
+lcs poll --all                     # 轮询状态与产物
+lcs run                            # 常驻：每 60s 一个 tick
 ```
 
-> 状态：**设计完成，代码未开工**。下一步见 `TASK.md`。
+常驻调度示例（把任务交给引擎，agent 只 poll）：
+
+```bash
+# 1) 提交任务（幂等键保证重试不会跑两次）
+lcs submit --spec job.json --json
+# 2) 隔一会儿取结果
+lcs poll --ids <task_id> --json
+# 3) 看为什么现在不跑（决策原因直接暴露）
+lcs tick --json | jq '.decisions'
+```
+
+## v0.1 状态
+
+**端到端已打通**：MiniMax 5h 固定窗口在 `end_time − 30min` 自动开烧 → 烧到 reserve 停 →
+产物落 `artifacts/<task_id>/<run_id>/` → verifier 通过才算 `succeeded`。
+
+| 能力 | 状态 |
+|---|---|
+| 2 个性质相反的 adapter（`minimax` fixed_grid / `payg` depleting） | ✅ |
+| reserve 时间函数（工作时段留量 / 尾段烧光 / 深夜立刻烧） | ✅ |
+| 准入控制 + 在飞 lease 占位 + 强度/高峰降档 + 自用活跃让路 | ✅ |
+| SQLite 状态机 + 幂等键 + deadline 过期 + 孤儿 reconcile | ✅ |
+| shell runner + 产物收集 + verifier + 超时 kill | ✅ |
+| CLI `submit/poll/status/observe/tick/run/cancel` | ✅ |
+| 测试（44 个，含端到端烧窗口验收，不消耗真实配额） | ✅ |
+| HTTP / MCP / 沙箱审批 / canary 校准 | v0.2 |
+
+```bash
+python3 -m pytest -q     # 全部通过
+```
+
+> 安全边界（v0.1）：**任务 spec = 本机 shell 命令**，引擎持有 provider API key，
+> 因此对外接口只做本机 CLI。开放 HTTP/MCP 前必须先上沙箱 + 审批（见 TASK.md 已知坑 #6）。
+
+> 状态：**v0.1 可用**。接续与待办见 `TASK.md`。
