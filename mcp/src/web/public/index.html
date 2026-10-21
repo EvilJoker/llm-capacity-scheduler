@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LCS · 容量调度控制台</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">LCS</span>
+        <div>
+          <h1>容量调度控制台</h1>
+          <p class="sub">把会过期的配额，变成有价值的产出</p>
+        </div>
+      </div>
+      <div class="top-status">
+        <span id="scheduler-dot" class="dot"></span>
+        <span id="scheduler-text">连接中…</span>
+        <span class="clock" id="clock"></span>
+        <button id="btn-tick" class="btn">立即 Tick</button>
+        <button id="btn-pause" class="btn ghost">暂停调度</button>
+      </div>
+    </header>
+
+    <nav class="tabs">
+      <button data-tab="overview" class="tab active">概览</button>
+      <button data-tab="tasks" class="tab">任务</button>
+      <button data-tab="capacity" class="tab">容量</button>
+      <button data-tab="config" class="tab">配置</button>
+    </nav>
+
+    <main>
+      <!-- ---------------------------------------------------------- 概览 -->
+      <section id="tab-overview" class="tab-panel active">
+        <div class="grid" id="bucket-cards"></div>
+
+        <div class="row2">
+          <div class="panel">
+            <div class="panel-head"><h2>任务状态</h2></div>
+            <div id="counts" class="chips"></div>
+            <h2 class="mt">在飞执行</h2>
+            <div id="running"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <h2>最近决策</h2>
+              <span class="hint">为什么现在不跑</span>
+            </div>
+            <div id="decisions"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><h2>调度器</h2><span class="hint" id="engine-hint"></span></div>
+          <div id="engine-info" class="kv"></div>
+        </div>
+      </section>
+
+      <!-- ---------------------------------------------------------- 任务 -->
+      <section id="tab-tasks" class="tab-panel">
+        <div class="panel">
+          <div class="panel-head"><h2>提交任务</h2><span class="hint">提交 ≠ 执行：返回「等待时机」是正常状态</span></div>
+          <form id="task-form" class="form-grid">
+            <label>执行器
+              <select id="f-runner">
+                <option value="shell">shell（本地命令）</option>
+                <option value="dsh">dsh headless（LLM 任务）</option>
+              </select>
+            </label>
+            <label id="f-cmd-wrap" class="span2">命令（shell）
+              <textarea id="f-cmd" rows="2" placeholder='["python3","jobs/summarize.py"] 或 python3 jobs/summarize.py'></textarea>
+            </label>
+            <label id="f-prompt-wrap" class="span2 hidden">任务文本（dsh headless）
+              <textarea id="f-prompt" rows="2" placeholder="总结 docs/ 下的设计文档，输出 summary.md"></textarea>
+            </label>
+            <label>价值（0-100）<input id="f-value" type="number" value="60" min="0" max="100" /></label>
+            <label>预估 token<input id="f-tokens" type="number" placeholder="120000" /></label>
+            <label>或预估消耗 %<input id="f-estpct" type="number" step="0.1" placeholder="4.5" /></label>
+            <label>deadline<input id="f-deadline" type="datetime-local" /></label>
+            <label>任务类（校准）<input id="f-class" value="default" /></label>
+            <label>幂等键<input id="f-idem" placeholder="留空自动生成" /></label>
+            <label class="span2">声明产物（逗号分隔）<input id="f-artifacts" placeholder="out.json, report.md" /></label>
+            <label class="span2">验收命令（exit 0 才算成功）<input id="f-verify" placeholder="python3 verify.py" /></label>
+            <div class="span3 actions">
+              <button class="btn primary" type="submit">提交任务</button>
+              <span class="hint">引擎会在工作时段尾段 / 空闲时段按 reserve 自动开烧。</span>
+            </div>
+          </form>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>任务列表</h2>
+            <div class="row-actions">
+              <select id="task-filter">
+                <option value="">全部</option>
+                <option value="queued,deferred,submitted">进行中</option>
+                <option value="running">执行中</option>
+                <option value="succeeded">成功</option>
+                <option value="failed">失败</option>
+                <option value="cancelled,expired">已取消/过期</option>
+              </select>
+              <button id="btn-refresh-tasks" class="btn ghost">刷新</button>
+            </div>
+          </div>
+          <div id="task-table"></div>
+          <div id="task-detail"></div>
+        </div>
+      </section>
+
+      <!-- ---------------------------------------------------------- 容量 -->
+      <section id="tab-capacity" class="tab-panel">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>容量桶</h2>
+            <div class="row-actions">
+              <button id="btn-observe" class="btn">立即观测</button>
+              <button id="btn-refresh-samples" class="btn ghost">刷新采样</button>
+            </div>
+          </div>
+          <div id="capacity-buckets"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>采样历史</h2><span class="hint">最近 200 条</span></div>
+          <div id="samples"></div>
+        </div>
+      </section>
+
+      <!-- ---------------------------------------------------------- 配置 -->
+      <section id="tab-config" class="tab-panel">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>运行时配置</h2>
+            <span class="hint">保存后热加载；Web 端口改动需重启进程。API Key 显示 *** 表示保留原值。</span>
+          </div>
+          <div id="config-form" class="form-grid"></div>
+          <div class="actions">
+            <button id="btn-save-config" class="btn primary">保存配置</button>
+            <button id="btn-reload-config" class="btn ghost">重新加载</button>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>高级：原始 JSON</h2><span class="hint">整份配置，可直接编辑</span></div>
+          <textarea id="config-json" rows="20" spellcheck="false"></textarea>
+          <div class="actions">
+            <button id="btn-save-json" class="btn">保存 JSON</button>
+            <button id="btn-sync-json" class="btn ghost">表单 → JSON</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast"></div>
+    <script src="/app.js"></script>
+  </body>
+</html>

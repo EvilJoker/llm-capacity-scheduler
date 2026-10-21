@@ -1,0 +1,46 @@
+{
+  "name": "llm-capacity-scheduler-mcp",
+  "version": "0.2.0",
+  "description": "容量感知异步任务调度器（MCP Server + Web 控制台）：把会过期的 LLM 配额变成有价值的产出",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "lcs-mcp": "bin/lcs-mcp.js"
+  },
+  "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "mcp",
+    "llm",
+    "scheduler",
+    "quota",
+    "minimax",
+    "capacity"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "dev": "tsx src/cli.ts",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "prepublishOnly": "npm run build && npm test",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}
