@@ -8,15 +8,10 @@
 
 ![Web 控制台](docs/images/web-overview.png)
 
-## 交付物
+**单语言栈**：整个产品（MCP Server / 调度器 / 执行器 / Web 控制台）都是 TypeScript + Node，
+位于 `mcp/`。v0.1 的 Python 参考实现已归档到 tag `v0.1-python` 并从主干移除。
 
-| 目录 | 形态 | 说明 |
-|---|---|---|
-| **`mcp/`** | **npm 包（产品）** | MCP Server + 自带 Web 控制台。一个 Node 进程同时提供 MCP stdio、调度器与浏览器界面。 |
-| `src/lcs/` | Python 参考实现（v0.1） | 最初的引擎原型 + `lcs` CLI，用于对照设计、跑单元测试；新功能以 `mcp/` 为准。 |
-| `docs/` | 设计文档 | `MCP-DESIGN.md`（v0.2 定稿模型）、`DESIGN.md`（v0.1 设计）、`PRIOR-ART.md`（调研）。 |
-
-## 快速开始（npm / MCP）
+## 快速开始
 
 ```bash
 npm install -g llm-capacity-scheduler-mcp   # Node.js >= 20
@@ -95,22 +90,6 @@ runner × est × route）、**Queue**（任务状态的派生视图，不是独�
 
 完整设计见 [`docs/MCP-DESIGN.md`](docs/MCP-DESIGN.md)。
 
-## Python 参考引擎（v0.1）
-
-```bash
-python3 -m pip install -e .
-lcs init-config
-lcs observe                 # 只读容量（不消耗配额）
-lcs submit --cmd "python3 job.py" --value 70 --tokens 120000
-lcs tick                    # 单次 tick（准入 + 派发 + 收口）
-lcs run                     # 常驻 tick 循环
-lcs poll --all
-```
-
-v0.1 已实现：MiniMax（fixed_grid + 周 unlimited）与 PAYG（depleting）两个性质相反的 adapter、
-reserve 时间函数、SQLite 状态机 + 幂等 + EWMA 校准、shell runner + verifier、CLI。
-44 个 Python 测试覆盖策略与端到端烧窗口。
-
 ## 目录
 
 ```
@@ -120,12 +99,11 @@ llm-capacity-scheduler/
 │   ├── src/capacity/{minimax,payg,mock}.ts
 │   ├── src/runner/{shell,dsh}.ts
 │   ├── src/web/{server.ts,public/}
-│   └── src/test/                # 38 个 node:test 用例
-├── src/lcs/                     # v0.1 Python 参考引擎 + CLI
-├── tests/                       # v0.1 Python 测试（44 个）
+│   ├── src/test/                # 38 个 node:test 用例
+│   └── README.md
 ├── docs/
 │   ├── MCP-DESIGN.md            # v0.2 定稿：6 实体模型 / 队列语义 / MCP+Web 架构
-│   ├── DESIGN.md                # v0.1 设计：容量模型 / reserve / 数据模型
+│   ├── DESIGN.md                # v0.1 历史设计（实现已归档）
 │   └── PRIOR-ART.md             # 现有项目对照
 ├── TASK.md                      # 执行状态与决策记录（gitignore）
 └── README.md
@@ -134,11 +112,11 @@ llm-capacity-scheduler/
 ## 开发与测试
 
 ```bash
-# npm 产品
-cd mcp && npm install && npm run build && npm test
-
-# Python 参考实现
-python3 -m pytest -q
+cd mcp
+npm install
+npm run build
+npm test        # 38 个用例：策略 / 存储 / adapter / 引擎 e2e / Web API / MCP 闭环
+npm run dev -- serve
 ```
 
 ## 安全边界
@@ -153,6 +131,6 @@ python3 -m pytest -q
 
 | 版本 | 内容 | 状态 |
 |---|---|---|
-| v0.1 | Python 引擎：容量模型 / reserve / SQLite / shell runner / CLI | ✅ |
-| **v0.2** | **npm MCP Server + Web 控制台 + Assignment/ModelCatalog + dsh runner + 窗口抢占/续跑** | ✅ |
+| v0.1 | Python 参考引擎：容量模型 / reserve / SQLite / shell runner / CLI | ✅ **已归档**（tag `v0.1-python`） |
+| **v0.2** | **TypeScript 单栈：npm MCP Server + Web 控制台 + Assignment/ModelCatalog + dsh runner + 窗口抢占/续跑** | ✅ 当前 |
 | v0.3 | npm 发布、dsh headless 实机联调、消耗校准 canary、沙箱与审批、第三个 provider（证伪抽象） | 计划 |

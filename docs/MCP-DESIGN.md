@@ -2,7 +2,8 @@
 
 > 本文是 v0.2 的**定稿设计**：把 v0.1 的「引擎概念」对齐成可实现的 6 实体模型，
 > 并定产品形态 —— **一个 npm 部署的 MCP Server，自带 Web 控制台**。
-> 实现见 `mcp/`。v0.1 的 Python 引擎（`src/lcs/`、`lcs` CLI）保留为参考实现。
+> 实现见 `mcp/`（TypeScript 单栈）。v0.1 的 Python 参考实现已归档到 tag `v0.1-python`，
+> 并从主干移除。
 
 ---
 
@@ -250,4 +251,4 @@ GET  /api/samples?bucket=&limit=
 3. MCP 客户端（DSH）能 `lcs_submit_task` → `lcs_poll_tasks` 拿到产物；
 4. 用 mock provider + 可控时钟的测试复现：工作时段不烧 → 尾段开烧 → 烧到 reserve 停；
 5. 窗口边界：`window_too_short` 拒绝 + 跨窗口 run 被 interrupted 并重排（带 checkpoint 时提权）；
-6. `npm run build && npm test` 全绿；Python v0.1 的 44 个测试不受影响。
+6. `npm run build && npm test` 全绿（38 个用例）。

@@ -3,7 +3,8 @@
 > 目标读者：后续接手的 agent / 未来的自己。看完这一份应当能直接写代码。
 >
 > **v0.2 起模型有更新**（六实体 / Queue 语义 / Assignment / 窗口抢占 / MCP+Web 形态），
-> 以 [`docs/MCP-DESIGN.md`](MCP-DESIGN.md) 为准；本文保留为 v0.1 的实现依据。
+> 以 [`docs/MCP-DESIGN.md`](MCP-DESIGN.md) 为准。
+> 本文保留为 **v0.1 历史设计**：对应的 Python 实现已归档到 tag `v0.1-python` 并从主干移除。
 
 ---
 
