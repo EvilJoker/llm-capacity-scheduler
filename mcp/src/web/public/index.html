@@ -116,14 +116,16 @@
           <div class="panel-head">
             <h2>容量桶</h2>
             <div class="row-actions">
-              <button id="btn-observe" class="btn">立即观测</button>
-              <button id="btn-refresh-samples" class="btn ghost">刷新采样</button>
+              <button id="btn-observe" class="btn">刷新容量</button>
             </div>
           </div>
           <div id="capacity-buckets"></div>
         </div>
         <div class="panel">
-          <div class="panel-head"><h2>采样历史</h2><span class="hint">最近 200 条</span></div>
+          <div class="panel-head">
+            <h2>观测记录</h2>
+            <span class="hint">每轮调度自动记录一次 · 最近 200 条</span>
+          </div>
           <div id="samples"></div>
         </div>
       </section>
@@ -173,7 +175,7 @@
                    placeholder="MiniMax Subscription Key（只保存在本机配置文件，0600）" />
           </label>
           <p class="hint span2">
-            保存后会写入配置并立即观测一次，切到「容量」页刷新即可看到新桶。
+            保存后会写入配置并立刻拉一次容量，切到「容量」页即可看到新桶。
             暂不支持自定义厂商与端点，其他厂商后续按需接入。
           </p>
         </div>

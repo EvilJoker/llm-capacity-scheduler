@@ -694,7 +694,7 @@ async function saveProvider() {
       return `${b.provider}/${b.modelFamily}/${b.resourceKind} = ${value}${suffix}（${b.source}）`;
     });
     toast(
-      `已添加 ${result.provider}${buckets.length ? `\n新桶：${buckets.join("；")}` : "\n暂未观测到桶，检查 Key 后到容量页点「立即观测」"}\n切到「容量」页刷新即可看到`,
+      `已添加 ${result.provider}${buckets.length ? `\n新桶：${buckets.join("；")}` : "\n暂未观测到桶，检查 Key 后到容量页点「刷新容量」"}\n切到「容量」页刷新即可看到`,
     );
     await refreshStatus();
     if (document.getElementById("tab-capacity").classList.contains("active")) await refreshSamples();
@@ -773,14 +773,13 @@ function bindEvents() {
   $("btn-observe").addEventListener("click", async () => {
     try {
       await api("/api/observe", { method: "POST" });
-      toast("已观测一次容量");
+      toast("已向 provider 拉取一次最新容量");
       await refreshStatus();
       await refreshSamples();
     } catch (error) {
       fail(error);
     }
   });
-  $("btn-refresh-samples").addEventListener("click", () => void refreshSamples());
 
   $("btn-save-config").addEventListener("click", () => void saveConfig(collectConfigForm()));
   $("btn-reload-config").addEventListener("click", () => void loadConfig());
@@ -845,6 +844,12 @@ async function bootstrap() {
       void refreshTasks();
     }
   }, 4000);
+  // 观测记录（采样历史）随调度周期自动刷新：每个周期引擎都会 observe 一次
+  setInterval(() => {
+    if (document.visibilityState === "visible" && document.getElementById("tab-capacity").classList.contains("active")) {
+      void refreshSamples();
+    }
+  }, 5000);
   setInterval(() => {
     if (state.status) $("clock").textContent = fmtTime(state.status.now);
   }, 1000);

@@ -20,8 +20,8 @@ lcs-mcp serve                               # 调度器 + Web：http://127.0.0.1
 ```
 
 接入 provider 不用手改配置：打开 Web → **配置 → Provider → 「＋ 添加 LLM」**，
-选厂商（当前支持 MiniMax）、填 API Key、保存 —— 引擎会立即观测一次，
-切到「容量」页刷新就能看到新桶；不用的 Key 点选项卡里的「删除」即可移除。也支持手写
+选厂商（当前支持 MiniMax）、填 API Key、保存 —— 引擎会立刻向 provider 拉一次容量，
+切到「容量」页就能看到新桶；不用的 Key 点选项卡里的「删除」即可移除。也支持手写
 `apiKey` / `apiKeyEnv` / `apiKeyFile` 三种方式。
 
 ![添加 LLM](docs/images/add-provider.png)

@@ -32,7 +32,7 @@ lcs-mcp serve                         # 常驻：调度器 + Web 控制台（htt
 ```
 
 起服务后，不用手改配置也能接 provider：**配置 → Provider → 「＋ 添加 LLM」**，选厂商
-（当前支持 MiniMax）、填 API Key、保存。保存后会立即观测一次，切到「容量」页刷新即可
+（当前支持 MiniMax）、填 API Key、保存。保存后会立刻向 provider 拉一次容量，切到「容量」页即可
 看到新桶；同一厂商可以加多个 Key（自动命名 `minimax` / `minimax-2`）。
 
 只想临时用（不常驻）也可以直接 `lcs-mcp`：它同时起调度器 + Web + MCP stdio。
@@ -109,7 +109,7 @@ Task ──(Queue 派生视图)──▶ Controller ──(Assignment)──▶ 
 |---|---|
 | 概览 | 容量桶卡片（余量/窗口倒计时/reserve 线）、队列/在飞、最近决策原因、手动 tick / 暂停 |
 | 任务 | 提交表单（shell / dsh headless）、任务表、执行记录、产物在线查看、取消 |
-| 容量 | 桶明细 + 采样历史，解释「现在为什么不烧」 |
+| 容量 | 桶明细 + 观测记录（每轮调度自动落一条，页面自动刷新），解释「现在为什么不烧」；「刷新容量」手动向 provider 拉一次 |
 | 配置 | 表单 + 原始 JSON 双模式，保存即热加载；Provider 用选项卡管理，「＋ 添加 LLM」按厂商预设接入（当前支持 MiniMax）、「删除」移除该 Key；API Key 脱敏 |
 
 ```bash
