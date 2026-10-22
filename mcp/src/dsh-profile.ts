@@ -1,13 +1,18 @@
 /**
  * dsh profile / 运行期 patch 管理。
  *
- * - profile：LCS 自建 `~/.dsh/profiles/lcs`（bundles: dsh-base + dsh-headless），
+ * - profile：LCS 自建 `<engine.dshHome>/profiles/lcs`（bundles: dsh-base + dsh-headless），
  *   其 patch 层静态声明所有 provider 的路由（api/baseURL/apiKeyEnv/models，**不含 Key**）；
  * - 运行期 patch：每次调用只覆盖 `agent-default-model`（provider + model），
  *   按 (route, model) 缓存到 patchDir，避免重复写盘。
  *
- * 关键约束：dsh 的 patch 是**整段替换**目标 row 的 config，所以路由必须在 profile 层，
- * 运行期 patch 绝不能去覆盖 `llm-pi-ai`，否则会抹掉其它路由。
+ * 关键约束：
+ * 1. dsh 的 patch 是**整段替换**目标 row 的 config，所以路由必须在 profile 层，
+ *    运行期 patch 绝不能去覆盖 `llm-pi-ai`，否则会抹掉其它路由。
+ * 2. **家目录必须隔离**：`engine.dshHome` 是 LCS 执行器专用 DSH_HOME（默认
+ *    `~/.lcs/dsh-home`），与用户自己的 `~/.dsh` 物理分开。会话因此不会出现在
+ *    dsh web 侧边栏，清理时也不会碰到用户的会话（2026-10-22 事故后定）。
+ *    只读资产（AGENTS.md / skills）以符号链接方式共享过去，保持任务上下文一致。
  */
 
 import fs from "node:fs";
@@ -15,7 +20,7 @@ import os from "node:os";
 import path from "node:path";
 
 import type { Config, ProviderConfig } from "./config.js";
-import { atomicWriteFileSync } from "./util.js";
+import { atomicWriteFileSync, resolvePath } from "./util.js";
 
 export interface DshRouteConfig {
   route: string;
@@ -105,11 +110,40 @@ export function renderRunPatch(route: string, model: string): string {
   ].join("\n");
 }
 
-/** 确保 ~/.dsh/profiles/<profile> 存在且路由声明是最新的（幂等）。 */
+/**
+ * 把用户主家目录里的只读资产链接到隔离家目录。
+ *
+ * 只链接文本资产（AGENTS.md、skills/），**不链接 sessions / storages / profiles**——
+ * 那正是必须隔离的部分。链接失败不影响主流程。
+ */
+function linkSharedAssets(isolatedHome: string): void {
+  const sharedHome = path.join(os.homedir(), ".dsh");
+  if (path.resolve(isolatedHome) === path.resolve(sharedHome)) return;
+  for (const name of ["AGENTS.md", "skills"]) {
+    const source = path.join(sharedHome, name);
+    const target = path.join(isolatedHome, name);
+    if (!fs.existsSync(source)) continue;
+    try {
+      if (fs.existsSync(target) || fs.lstatSync(target)) continue;
+    } catch {
+      /* 不存在，继续 */
+    }
+    try {
+      fs.symlinkSync(source, target, name.endsWith(".md") ? "file" : "dir");
+    } catch {
+      /* 链接不了就算了：任务少一份全局说明而已 */
+    }
+  }
+}
+
+/** 确保 <dshHome>/profiles/<profile> 存在且路由声明是最新的（幂等）。 */
 export function ensureDshProfile(config: Config, profile: string): { dir: string; changed: boolean } {
-  const home = process.env.DSH_HOME?.trim() || path.join(os.homedir(), ".dsh");
+  const rawHome = config.engine.dshHome?.trim() || path.join(os.homedir(), ".lcs", "dsh-home");
+  // 展开 ~：配置里可能写的是 `~/.lcs/dsh-home`，不能把字面量 `~` 当目录名用
+  const home = resolvePath(rawHome, process.cwd());
   const dir = path.join(home, "profiles", profile);
   fs.mkdirSync(dir, { recursive: true });
+  linkSharedAssets(home);
 
   const packageJson = {
     name: `dsh-profile-${profile}`,

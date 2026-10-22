@@ -7,7 +7,7 @@
 
 ## 0. 一句话
 
-执行器收敛为**唯一的 dsh runner**，全局**串行**（一次只跑一个任务）；每个 task 绑定**一个 dsh session + 一个固定工作目录**；「切换模型」= 只换 dsh 后端的大模型，不影响 task/session 绑定；provider 的 Key 由调度器**按调用注入环境变量**，保证「烧的账号 = 记账的账号」；dsh 会话与用户共享 `~/.dsh`（界面层天然不可见），由 LCS 侧做**保留策略**定期清理。
+执行器收敛为**唯一的 dsh runner**，全局**串行**（一次只跑一个任务）；每个 task 绑定**一个 dsh session + 一个固定工作目录**；「切换模型」= 只换 dsh 后端的大模型，不影响 task/session 绑定；provider 的 Key 由调度器**按调用注入环境变量**，保证「烧的账号 = 记账的账号」；dsh 会话写在**LCS 专用的隔离 `DSH_HOME`**（`~/.lcs/dsh-home`），与用户的 `~/.dsh` 物理隔离，由 LCS 侧只清理**自己登记过**的会话。
 
 ---
 
@@ -37,7 +37,7 @@
 |---|---|---|
 | D1 | 执行器**只有 dsh** | 执行器的价值 = 消耗额度 + 跑 LLM 任务；shell 属于「非 LLM 本地任务」，与本产品定位不符 |
 | D2 | **全局串行**：同一时刻最多 1 个任务在跑 | 单 dsh 进程、额度可控、session 简单、避免同账号并发撞限流；代价是吞吐（见 §3.2） |
-| D3 | **共享 `DSH_HOME=~/.dsh`**，LCS 自建 profile `lcs` | 会话界面层天然不可见（实测：不在 workspace 注册表里）；用户的 skill/AGENTS/凭据照常可用；不碰用户的 `headless`/`web` profile |
+| D3 | ~~共享 `DSH_HOME=~/.dsh`~~ → **改为独立 `DSH_HOME=~/.lcs/dsh-home`**（2026-10-22 事故后反转） | 共享家目录时，LCS 的「孤儿会话」清理会扫到**用户自己的 dsh web 会话**并删除（真实数据丢失）。隔离后会话物理分开；AGENTS.md / skills 以符号链接只读共享，保持任务上下文一致 |
 | D4 | **路由静态、模型动态** | 路由（api/baseURL/apiKeyEnv/models）写在 profile 的 patch 层；每次运行只用 `--patch` 覆盖 `agent-default-model` |
 | D5 | **Key 只走环境变量** | 配置文件 0600 存 Key（已如此），spawn 时注入子进程 env；patch 与命令行都不出现明文 Key |
 | D6 | 每 task 一个 **dsh session** + 一个**固定工作目录** | dsh 接管 session 要求 cwd 一致；固定工作目录让同一 task 的多次运行可续跑 |
@@ -473,5 +473,34 @@ final.md 内容: OK
 | 事件流含 `session` / `step_end.usage` / `final` / `turn_end` | ✅ 契约确认 |
 | env 注入覆盖凭据文件 | ✅ 假 Key → `401 authentication_error` |
 | 独立 `DSH_HOME` | ✅ 会话隔离到独立目录（本次未采用） |
-| 共享 `~/.dsh` + 自建 profile `lcs` | ✅ 正常运行，会话落共享 store |
+| 独立 `DSH_HOME=~/.lcs/dsh-home` + 自建 profile `lcs` | ✅ 正常运行，会话落隔离 store；用户 `~/.dsh/sessions` 计数执行前后不变 |
 | dsh web 侧边栏可见性 | headless 会话**不在** workspace 注册表 → 界面不可见；`session.list` API 可见 |
+
+---
+
+## 18. 事故记录：GC 越界删除用户会话（2026-10-22）
+
+**现象**：用户 dsh web 的历史会话大面积消失（44 个），DSH 自身从不删会话目录。
+
+**根因**：`mcp/src/gc.ts` 第 2 段「孤儿会话」分支——扫整个共享 `~/.dsh/sessions/**`，
+把「不属于任何 LCS task 且目录 mtime 超过保留期（7 天）」的 `session-*` 目录删掉，
+连带删投影缓存。在共享 `~/.dsh` 的前提下，这等于**替用户决定哪些会话该留**。
+触发频率：每 30 个 tick（约 30 分钟）一轮，每轮最多 10 个。
+
+**修复（两条，缺一不可）**：
+1. **GC 只删自己登记过的会话**：`sessionId` 只能来自 store 里 `task.checkpoint.sessionId`，
+   且 `engine.sessionRetentionDays` 只作用于**终态** task；彻底删掉「按 mtime 扫目录」的分支。
+2. **家目录物理隔离**：新增 `engine.dshHome`（默认 `~/.lcs/dsh-home`），
+   - dsh 子进程通过 `DSH_HOME` 注入；
+   - 执行器 profile 建在 `<dshHome>/profiles/lcs`；
+   - GC 的所有路径都限定在 `<dshHome>` 内；
+   - **配置校验直接拒绝 `dshHome === ~/.dsh`**（启动即失败，不等 GC 周期）；
+   - AGENTS.md / skills 以符号链接只读共享到隔离家目录。
+
+**回归防线**：
+- 测试 `GC：不属于 LCS 的会话一律不删（2026-10-22 事故回归测试）`
+- 测试 `GC：只碰 engine.dshHome，绝不碰用户家目录`
+- 测试 `配置：engine.dshHome 指向 ~/.dsh 时直接拒绝启动`
+
+**验证**：隔离家目录跑真实 dsh 任务 → 用户 `~/.dsh/sessions` 计数 67→67 不变，
+新会话落在 `~/.lcs/dsh-home/sessions/`；子进程 `invocation.json` 记录 `dshHome` 正确。

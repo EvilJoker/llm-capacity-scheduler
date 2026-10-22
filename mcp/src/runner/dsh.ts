@@ -35,6 +35,8 @@ export const FINAL_ARTIFACT = "final.md";
 
 export interface DshRunnerOptions extends SpawnRunnerOptions {
   dsh: DshRunnerConfig;
+  /** 执行器专用 DSH_HOME：会话落在这里，与用户自己的 ~/.dsh 隔离 */
+  dshHome: string;
   /** provider 名 → dsh 路由 */
   routes: Record<string, DshRouteLike>;
   /** provider 名 → 该 provider 的 Key（明文，仅注入子进程 env 用） */
@@ -85,6 +87,8 @@ export class DshRunner extends SpawnRunner {
       ...task.spec.env,
       ...assignment.route,
       DSH_PROFILE: this.dsh.profile,
+      // 会话隔离：子 dsh 用 LCS 专用家目录，绝不写进用户的 ~/.dsh
+      DSH_HOME: this.dshOptions.dshHome,
       LCS_ARTIFACT_DIR: run.runDir,
     };
     // Key 注入：只走环境变量，命令行与 patch 都不出现明文

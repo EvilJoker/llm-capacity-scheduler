@@ -124,7 +124,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<CheckResul
   // ── 4. 执行器 profile（dsh 侧路由声明）────────────────────────────
   if (config) {
     const profile = config.runners.dsh.profile;
-    const dshHome = env.DSH_HOME?.trim() || path.join(home, ".dsh");
+    const dshHome = config.engine.dshHome || path.join(home, ".dsh");
     const profileDir = path.join(dshHome, "profiles", profile);
     const routes = collectDshRoutes(config);
     let patch = "";
@@ -145,6 +145,30 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<CheckResul
         : routes.length === 0
           ? "没有带 dsh 路由的厂商：先在 Web 控制台添加厂商并选好模型。"
           : "启动一次 `lcs-mcp serve` 会自动补写执行器 profile 的路由声明。",
+    });
+  }
+
+  // ── 4b. 执行器家目录隔离（2026-10-22 事故后新增）────────────────────
+  if (config) {
+    const sharedHome = path.join(home, ".dsh");
+    const isolated = path.resolve(config.engine.dshHome) !== path.resolve(sharedHome);
+    const sessionsDir = path.join(config.engine.dshHome, "sessions");
+    checks.push({
+      name: "执行器家目录隔离",
+      level: isolated ? "ok" : "fail",
+      detail: isolated
+        ? `${config.engine.dshHome}（会话只落在这里）`
+        : `${config.engine.dshHome} —— 与用户 dsh 家目录相同！`,
+      hint: isolated
+        ? undefined
+        : "LCS 的 dshHome 不能是 ~/.dsh：共享家目录会让清理逻辑扫到用户自己的会话" +
+          "（2026-10-22 真实事故）。改成独立目录，例如 ~/.lcs/dsh-home。",
+    });
+    checks.push({
+      name: "执行器会话目录",
+      level: "ok",
+      detail: sessionsDir,
+      hint: "LCS 产生的 dsh 会话只写这个目录；用户 ~/.dsh/sessions 不会被 GC 触碰。",
     });
   }
 

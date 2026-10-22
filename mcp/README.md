@@ -199,8 +199,11 @@ lcs-mcp serve --no-web             # 只跑调度器
 - **runner**：v0.3 起**只有 `dsh`**（`dsh --profile lcs --patch <run.patch.yml> --json "<task>"`）。
   模型由 provider 的 `options.dsh.defaultModel` 决定，运行期 patch 只切模型、不动路由；
   checkpoint = `--session-id`，同 task 续跑复用 session 与工作目录。
-- **执行器 profile**：LCS 自建 `~/.dsh/profiles/lcs`（bundles = base + headless），
-  路由声明写在它的 patch 层；**API Key 只走环境变量注入**，不进 patch、不进命令行。
+- **执行器家目录（隔离）**：`engine.dshHome`，默认 `~/.lcs/dsh-home`。
+  dsh 会话、投影缓存、执行器 profile（`profiles/lcs`）全在这里，**与用户的 `~/.dsh` 物理隔离**；
+  任务上下文需要的 `AGENTS.md` / `skills` 以符号链接只读共享过去。
+  配置校验会拒绝 `dshHome === ~/.dsh`——共享家目录会让清理逻辑扫到用户自己的会话。
+- **API Key 只走环境变量注入**，不进 patch、不进命令行。
 - **route 注入**：任务进程会拿到 `LCS_PROVIDER` / `LCS_MODEL` / `LCS_ASSIGNMENT_ID`，
   保证「控制器以为的桶」和「真实消耗的桶」一致。
 

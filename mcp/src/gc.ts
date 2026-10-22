@@ -1,18 +1,23 @@
 /**
  * 会话 / 产物保留策略（GC）。
  *
- * 背景：LCS 与用户共享 `~/.dsh`，调度产生的 dsh session 会堆在
- * `~/.dsh/sessions/<cwd-slug>/session-<id>/`，同时让 `session.list` 变大。
- * 策略：
- * - task 终态且超过保留期 → 删它的 dsh session 目录 + 投影缓存 + 产物目录；
- * - 不在 tasks 里的孤儿 session（按 mtime 判断年龄）→ 超过保留期也删；
- * - **绝不删非终态 task 的 session**（正在跑/待续跑）。
+ * ⚠️ 安全边界（2026-10-22 事故后收紧，务必读完再改）：
  *
- * 定位 session 目录不复刻 dsh 的 slug 规则，直接按 sessionId 在 sessions 根下找。
+ * 事故：LCS 与用户共享 `~/.dsh` 时，这里曾有一个「孤儿会话」分支——扫
+ * `~/.dsh/sessions/**`，把「不属于任何 LCS task 且目录 mtime 超期」的主会话
+ * 全部删掉。那删掉的是**用户自己 dsh web 的会话**，不是 LCS 的。已造成真实数据丢失。
+ *
+ * 现在两条硬规则：
+ * 1. **只删 LCS 自己登记过的会话**（store 里 `task.checkpoint.sessionId`）。
+ *    绝不按 mtime 扫目录去删「看起来没人要」的会话——LCS 没有资格判断别人的会话。
+ * 2. **所有路径都限定在 `engine.dshHome`**（LCS 执行器专用 DSH_HOME）。
+ *    它与用户的 `~/.dsh` 物理隔离：会话、投影缓存、profile 都在自己的家目录里。
+ *    共享的只有只读文本资产（AGENTS.md / skills，见 dsh-profile.ts）。
+ *
+ * 另外：绝不删非终态 task 的 session（正在跑 / 待续跑）。
  */
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import type { Config } from "./config.js";
@@ -25,17 +30,18 @@ export interface GcResult {
   removedProjections: number;
 }
 
-function dshHome(): string {
-  return process.env.DSH_HOME?.trim() || path.join(os.homedir(), ".dsh");
+/** LCS 执行器专用 DSH_HOME（会话与投影都在这里，绝不碰用户的 ~/.dsh）。 */
+function dshHome(config: Config): string {
+  return config.engine.dshHome;
 }
 
-function sessionsRoot(): string {
-  return path.join(dshHome(), "sessions");
+function sessionsRoot(config: Config): string {
+  return path.join(dshHome(config), "sessions");
 }
 
-function projCacheFile(sessionId: string): string {
+function projCacheFile(config: Config, sessionId: string): string {
   return path.join(
-    dshHome(),
+    dshHome(config),
     "storages",
     "session_projcache",
     "sessions",
@@ -44,8 +50,8 @@ function projCacheFile(sessionId: string): string {
 }
 
 /** 在 sessions 根下找到该 session 的目录（按 sessionId 精确匹配）。 */
-function findSessionDir(sessionId: string): string | null {
-  const root = sessionsRoot();
+function findSessionDir(config: Config, sessionId: string): string | null {
+  const root = sessionsRoot(config);
   let entries: string[];
   try {
     entries = fs.readdirSync(root);
@@ -59,9 +65,12 @@ function findSessionDir(sessionId: string): string | null {
   return null;
 }
 
-function removeSession(sessionId: string): boolean {
-  const dir = findSessionDir(sessionId);
+function removeSession(config: Config, sessionId: string): boolean {
+  const dir = findSessionDir(config, sessionId);
   if (!dir) return false;
+  // 二次保险：只删 LCS 专用家目录下的东西
+  const root = path.resolve(sessionsRoot(config));
+  if (!path.resolve(dir).startsWith(root + path.sep)) return false;
   try {
     fs.rmSync(dir, { recursive: true, force: true });
     return true;
@@ -70,8 +79,8 @@ function removeSession(sessionId: string): boolean {
   }
 }
 
-function removeProjection(sessionId: string): boolean {
-  const file = projCacheFile(sessionId);
+function removeProjection(config: Config, sessionId: string): boolean {
+  const file = projCacheFile(config, sessionId);
   try {
     if (!fs.existsSync(file)) return false;
     fs.rmSync(file, { force: true });
@@ -83,6 +92,10 @@ function removeProjection(sessionId: string): boolean {
 
 /**
  * 清理过期会话与产物。
+ *
+ * 只处理**已知归属**的对象：终态 task 自己登记过的 dsh session，以及它的产物目录。
+ * 未知会话（不属于任何 LCS task）一律不碰。
+ *
  * @param maxPerCall 单次最多删除多少个会话（避免一次 tick 做太多 IO）
  */
 export function gcExpired(
@@ -95,15 +108,15 @@ export function gcExpired(
   const retentionMs = Math.max(0, config.engine.sessionRetentionDays) * 24 * 3600 * 1000;
   if (retentionMs === 0) return result; // 0 = 永久保留
 
-  // 1) 终态 task 的会话
+  // 1) 终态 task 自己的会话（sessionId 来自 store，不是猜的）
   for (const task of store.listTasks({ states: TERMINAL_STATES, limit: 5000, includeTerminal: true })) {
     if (result.removedSessions >= maxPerCall) break;
     const finishedAt = task.finishedAt ?? task.updatedAt;
     if (now - finishedAt < retentionMs) continue;
     const sessionId = task.checkpoint?.sessionId;
     if (sessionId) {
-      if (removeSession(sessionId)) result.removedSessions += 1;
-      if (removeProjection(sessionId)) result.removedProjections += 1;
+      if (removeSession(config, sessionId)) result.removedSessions += 1;
+      if (removeProjection(config, sessionId)) result.removedProjections += 1;
       store.updateTask(task.id, { checkpoint: { ...task.checkpoint!, sessionId: undefined } });
     }
     // 产物目录：整个 task 的产物（与 session 同保留期）
@@ -118,48 +131,8 @@ export function gcExpired(
     }
   }
 
-  // 2) 孤儿会话（不属于任何 task），按目录 mtime 判断年龄
-  const known = new Set<string>();
-  for (const task of store.listTasks({ limit: 10000, includeTerminal: true })) {
-    const sessionId = task.checkpoint?.sessionId;
-    if (sessionId) known.add(sessionId);
-  }
-  const root = sessionsRoot();
-  let slugDirs: string[] = [];
-  try {
-    slugDirs = fs.readdirSync(root);
-  } catch {
-    slugDirs = [];
-  }
-  for (const slug of slugDirs) {
-    if (result.removedSessions >= maxPerCall) break;
-    const slugDir = path.join(root, slug);
-    let names: string[];
-    try {
-      names = fs.readdirSync(slugDir);
-    } catch {
-      continue;
-    }
-    for (const name of names) {
-      if (result.removedSessions >= maxPerCall) break;
-      if (!name.startsWith("session-")) continue;
-      if (known.has(name)) continue;
-      let mtimeMs = 0;
-      try {
-        mtimeMs = fs.statSync(path.join(slugDir, name)).mtimeMs;
-      } catch {
-        continue;
-      }
-      if (now - mtimeMs < retentionMs) continue;
-      try {
-        fs.rmSync(path.join(slugDir, name), { recursive: true, force: true });
-        result.removedSessions += 1;
-        if (removeProjection(name)) result.removedProjections += 1;
-      } catch {
-        /* 忽略 */
-      }
-    }
-  }
-
+  // 2) 没有「孤儿会话」分支。
+  //    曾经按 mtime 扫整个 sessions 根删「不属于 LCS 的会话」，那会删掉用户自己的
+  //    dsh 会话（2026-10-22 真实事故）。LCS 只清理自己登记过的东西。
   return result;
 }

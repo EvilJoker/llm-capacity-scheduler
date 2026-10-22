@@ -20,6 +20,12 @@ export interface EngineConfig {
   artifactsDir: string;
   /** 每 task 固定工作目录的根（dsh session 按 cwd 绑定） */
   workDir: string;
+  /**
+   * LCS 执行器专用的 DSH_HOME（会话 / 投影 / profile 都在这里）。
+   * 必须与用户的 `~/.dsh` 物理隔离：共享家目录时，任何按目录扫描的清理都可能
+   * 误删用户自己 dsh web 的会话（2026-10-22 真实事故）。
+   */
+  dshHome: string;
   maxParallel: number;
   /** dsh 会话保留天数（超过则清理会话目录与投影缓存） */
   sessionRetentionDays: number;
@@ -134,6 +140,7 @@ export function defaultConfig(): Config {
       stateFile: "~/.lcs/state.json",
       artifactsDir: "~/.lcs/artifacts",
       workDir: "~/.lcs/work",
+      dshHome: "~/.lcs/dsh-home",
       maxParallel: 1,
       sessionRetentionDays: 7,
       web: { enabled: true, host: "127.0.0.1", port: 7788 },
@@ -275,6 +282,7 @@ export function finalizeConfig(config: Config, configPath: string, baseDir?: str
   engine.stateFile = resolvePath(engine.stateFile, dir);
   engine.artifactsDir = resolvePath(engine.artifactsDir, dir);
   engine.workDir = resolvePath(engine.workDir, dir);
+  engine.dshHome = resolvePath(engine.dshHome, dir);
   const patchDir = config.runners.dsh.patchDir;
   if (typeof patchDir === "string") config.runners.dsh.patchDir = resolvePath(patchDir, dir);
   for (const provider of config.providers) {
@@ -346,6 +354,16 @@ export function validateConfig(config: Config): void {
   if (!(config.engine.sessionRetentionDays >= 0)) fail("engine.sessionRetentionDays 必须 ≥ 0");
   if (!config.engine.stateFile) fail("engine.stateFile 不能为空");
   if (!config.engine.artifactsDir) fail("engine.artifactsDir 不能为空");
+  if (!config.engine.dshHome) fail("engine.dshHome 不能为空");
+  // 共享家目录 = 会话互相可见 = 清理时可能误删对方的会话（2026-10-22 真实事故）。
+  // 这里直接拒绝启动，而不是等到某个 GC 周期把用户会话删掉才发现。
+  const sharedHome = path.join(os.homedir(), ".dsh");
+  if (path.resolve(config.engine.dshHome) === path.resolve(sharedHome)) {
+    fail(
+      "engine.dshHome 不能是 ~/.dsh：LCS 的会话必须与用户 dsh 的家目录隔离" +
+        "（否则 LCS 的清理会扫到用户自己的会话）。请改成独立目录，例如 ~/.lcs/dsh-home",
+    );
+  }
   if (!(config.engine.maxParallel >= 1)) fail("engine.maxParallel 必须 ≥ 1");
   if (config.engine.web.port < 0 || config.engine.web.port > 65535) {
     fail("engine.web.port 非法");

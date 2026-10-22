@@ -114,19 +114,17 @@ test("运行期 patch：只覆盖 agent-default-model", () => {
 test("dsh profile 自举：幂等生成 profile 目录", () => {
   const dir = tmpDir("lcs-profile-");
   const home = path.join(dir, "dsh-home");
-  const previous = process.env.DSH_HOME;
-  process.env.DSH_HOME = home;
-  try {
-    const config = defaultConfig();
+  const config = defaultConfig();
+  config.engine.dshHome = home;
+  {
     const first = ensureDshProfile(config, "lcs");
     assert.equal(first.changed, true);
     assert.ok(fs.existsSync(path.join(first.dir, "package.json")));
     assert.ok(fs.existsSync(path.join(first.dir, "cordis.patch.yml")));
     const second = ensureDshProfile(config, "lcs");
     assert.equal(second.changed, false);
-  } finally {
-    if (previous === undefined) delete process.env.DSH_HOME;
-    else process.env.DSH_HOME = previous;
+    // 隔离：profile 必须建在 config.engine.dshHome 下，不能落到 ~/.dsh
+    assert.ok(first.dir.startsWith(home), `${first.dir} 应在 ${home} 下`);
   }
 });
 

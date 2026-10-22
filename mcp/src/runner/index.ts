@@ -47,6 +47,7 @@ export function buildRunners(config: Config, baseDir: string): RunnerMap {
     artifactsDir: config.engine.artifactsDir,
     defaultTimeoutS: config.runners.dsh.timeoutS,
     dsh: config.runners.dsh,
+    dshHome: config.engine.dshHome,
     routes: collectRunnerRoutes(config),
     keys: collectProviderKeys(config),
   });
