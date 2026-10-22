@@ -320,3 +320,26 @@ test("删除 LLM：DELETE /api/providers/:name 移除 provider 并落盘", async
     await ctx.web.close();
   }
 });
+
+test("清理审计：POST /api/gc 预览不删、状态里能看到审计与作用域", async () => {
+  const ctx = await setup();
+  try {
+    const before = await ctx.api("/api/status");
+    // 状态里必须暴露「GC 作用域」——让用户知道清理只发生在隔离家目录内
+    assert.ok(before.data.gc, "status 应包含 gc 段");
+    assert.equal(before.data.gc.sessionRetentionDays >= 0, true);
+    assert.ok(before.data.gc.dshHome, "status.gc.dshHome 应存在");
+    assert.equal(Array.isArray(before.data.gc.recent), true);
+
+    const preview = await ctx.api("/api/gc", {
+      method: "POST",
+      body: JSON.stringify({ dryRun: true }),
+    });
+    assert.equal(preview.status, 200);
+    assert.equal(preview.data.dryRun, true);
+    assert.equal(Array.isArray(preview.data.details), true);
+    assert.equal(typeof preview.data.foreignSessions, "number");
+  } finally {
+    await ctx.web.close();
+  }
+});

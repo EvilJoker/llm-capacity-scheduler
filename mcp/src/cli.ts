@@ -26,7 +26,8 @@ import { deepMerge, log, logError } from "./util.js";
 import { startWebServer, type RunningWebServer, type WebDeps } from "./web/server.js";
 
 interface CliOptions {
-  command: "mcp" | "serve" | "init" | "doctor";
+  command: "mcp" | "serve" | "init" | "doctor" | "gc";
+  dryRun: boolean;
   config?: string;
   web: boolean;
   mcp: boolean;
@@ -44,6 +45,7 @@ function parseCli(argv: string[]): CliOptions {
       "no-mcp": { type: "boolean" },
       "no-scheduler": { type: "boolean" },
       force: { type: "boolean" },
+      "dry-run": { type: "boolean" },
       help: { type: "boolean", short: "h" },
       version: { type: "boolean", short: "v" },
       port: { type: "string" },
@@ -58,15 +60,16 @@ function parseCli(argv: string[]): CliOptions {
     process.exit(0);
   }
   const command = (positionals[0] ?? "mcp") as CliOptions["command"];
-  if (!["mcp", "serve", "init", "doctor"].includes(command)) {
+  if (!["mcp", "serve", "init", "doctor", "gc"].includes(command)) {
     console.error(`未知命令: ${command}`);
     printHelp();
     process.exit(2);
   }
   if (values.port) process.env.LCS_PORT = values.port;
-  const isOneShot = command === "init" || command === "doctor";
+  const isOneShot = command === "init" || command === "doctor" || command === "gc";
   return {
     command,
+    dryRun: Boolean(values["dry-run"]),
     config: values.config,
     web: !values["no-web"] && !isOneShot,
     mcp: !values["no-mcp"] && command === "mcp",
@@ -83,6 +86,7 @@ function printHelp(): void {
   lcs-mcp serve [--config <path>]      常驻守护：调度器 + Web（不接 MCP 客户端）
   lcs-mcp init [--config <path>]       生成默认配置文件
   lcs-mcp doctor [--config <path>]     安装自检：还差什么（dsh/配置/凭据/守护进程/插件接线）
+  lcs-mcp gc [--dry-run]               清理审计：预览/执行一次 GC（只碰 LCS 自己的会话与产物）
 
 选项:
   -c, --config <path>   配置文件路径（默认 ~/.lcs/config.json，或 $LCS_CONFIG）
@@ -153,11 +157,97 @@ function isAlive(pid: number): boolean {
   }
 }
 
+/**
+ * `lcs-mcp gc [--dry-run]`：清理审计。
+ *
+ * - 守护进程在跑 → 转给它执行（避免两个进程同时写 state）；
+ * - 没在跑 → 本地开着 store 直接跑一次（一次性，不启动调度器）。
+ *
+ * 无论哪种方式，GC 都只处理 LCS 自己登记过的会话与产物，路径限定在 engine.dshHome 内。
+ */
+async function runGcCommand(configPath: string, dryRun: boolean): Promise<void> {
+  const loaded = loadConfig(configPath);
+  if (!loaded.exists) {
+    console.error(`配置不存在: ${loaded.path}（先跑 \`lcs-mcp init\`）`);
+    process.exitCode = 1;
+    return;
+  }
+  const config = finalizeConfig(loaded.config, loaded.path, loaded.baseDir);
+
+  const holder = lockHolder(config.engine.stateFile);
+  if (holder) {
+    const url = webUrl(config);
+    try {
+      const resp = await fetch(`${url}/api/gc`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ dryRun }),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const result = (await resp.json()) as {
+        dryRun: boolean;
+        removedSessions: number;
+        removedProjections: number;
+        removedArtifacts: number;
+        foreignSessions: number;
+        details: Array<{ taskId: string; sessionId: string | null }>;
+      };
+      printGcResult(result, `守护进程 pid=${holder.pid} @ ${url}`);
+      return;
+    } catch (error) {
+      console.error(`守护进程在跑但 GC 调用失败（${url}）：${String(error)}`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+
+  const store = Store.open(config.engine.stateFile);
+  const engine = new Engine({ config, baseDir: loaded.baseDir, store });
+  const result = engine.runGc({ dryRun });
+  printGcResult(result, `本地（无守护进程）· dshHome=${config.engine.dshHome}`);
+}
+
+function printGcResult(
+  result: {
+    dryRun: boolean;
+    removedSessions: number;
+    removedProjections: number;
+    removedArtifacts: number;
+    foreignSessions: number;
+    details: Array<{ taskId: string; sessionId: string | null }>;
+  },
+  where: string,
+): void {
+  const head = result.dryRun ? "清理预览（未删除任何东西）" : "清理完成";
+  console.log(`${head} —— ${where}`);
+  if (result.details.length === 0) {
+    console.log("  没有到期可清理的对象。");
+  } else {
+    for (const detail of result.details) {
+      console.log(
+        `  ${result.dryRun ? "[将删]" : "[已删]"} task=${detail.taskId}` +
+          (detail.sessionId ? ` session=${detail.sessionId}` : ""),
+      );
+    }
+  }
+  console.log(
+    `  会话 ${result.removedSessions} · 投影 ${result.removedProjections} · 产物 ${result.removedArtifacts}`,
+  );
+  console.log(
+    `  隔离家目录内陌生会话 ${result.foreignSessions} 个：不在清理范围（只统计，不删）`,
+  );
+}
+
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const options = parseCli(argv);
   const configPath = options.config
     ? path.resolve(options.config)
     : defaultConfigPath();
+
+  if (options.command === "gc") {
+    await runGcCommand(configPath, options.dryRun);
+    return;
+  }
 
   if (options.command === "doctor") {
     const checks = await runDoctor({ configPath });

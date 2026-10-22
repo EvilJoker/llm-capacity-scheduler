@@ -214,6 +214,7 @@ lcs-mcp [--config <path>]         MCP stdio + 调度器 + Web
 lcs-mcp serve                     常驻：调度器 + Web
 lcs-mcp init                      生成默认配置
 lcs-mcp doctor                    安装自检（还差什么）
+lcs-mcp gc [--dry-run]            清理审计：预览/执行一次 GC
       --port <n>                  覆盖 Web 端口
       --no-web / --no-mcp / --no-scheduler
       --force                     忽略单实例锁
@@ -226,6 +227,20 @@ npm install
 npm run build
 npm test                          # node:test，55 个用例（端到端烧窗口 / Web API / MCP 闭环 / 插件 / 迁移 / GC）
 npm run dev -- serve              # tsx 直跑
+```
+
+## 清理审计（GC）
+
+LCS 会清理**自己**跑过的 dsh 会话与产物，但边界严格：
+
+- 只删 `store` 里 `task.checkpoint.sessionId` 登记过、且已终态、超过保留期（`engine.sessionRetentionDays`，默认 7 天）的会话；
+- 路径限定在 `engine.dshHome`（`~/.lcs/dsh-home`）内，**绝不碰用户的 `~/.dsh`**；
+- 隔离家目录里出现不属于 LCS 的会话：只统计、不删；
+- 每次动作写审计（`store.gcLog`），Web 概览页「清理审计」可见，也可 `curl -X POST /api/gc -d '{"dryRun":true}'` 预览。
+
+```bash
+lcs-mcp gc --dry-run    # 只看会删什么（走守护进程或本地）
+lcs-mcp gc              # 真正执行一轮
 ```
 
 ## 安全边界

@@ -20,6 +20,19 @@ import type {
 import { QUEUE_STATES, TERMINAL_STATES, bucketKey } from "./types.js";
 import { atomicWriteFileSync, ensureDirSync, readJsonFile, uid } from "./util.js";
 
+/** 一次 GC 动作的审计记录（删了哪个 task 的哪个会话；dryRun 表示只是预览）。 */
+export interface GcLogEntry {
+  ts: number;
+  dryRun: boolean;
+  taskId: string;
+  sessionId: string | null;
+  removedSessions: number;
+  removedProjections: number;
+  removedArtifacts: number;
+}
+
+const MAX_GC_LOG = 200;
+
 export interface StoreData {
   version: 1;
   tickCount: number;
@@ -29,6 +42,8 @@ export interface StoreData {
   calibration: Record<string, { ewma: number; n: number }>;
   lastTick?: TickReport;
   decisions?: DecisionLog[];
+  /** 最近的清理审计（最新在前）。 */
+  gcLog?: GcLogEntry[];
 }
 
 const EMPTY: StoreData = {
@@ -101,6 +116,17 @@ export class Store {
 
   get decisions(): DecisionLog[] {
     return this.data.decisions ?? [];
+  }
+
+  /** 追加一条清理审计（最新在前，最多 MAX_GC_LOG 条）。 */
+  appendGcLog(entry: GcLogEntry): void {
+    const log = this.data.gcLog ?? [];
+    log.unshift(entry);
+    this.data.gcLog = log.slice(0, MAX_GC_LOG);
+  }
+
+  get gcLog(): GcLogEntry[] {
+    return this.data.gcLog ?? [];
   }
 
   // ------------------------------------------------------------------ tasks

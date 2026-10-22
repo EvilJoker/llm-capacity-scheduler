@@ -504,3 +504,12 @@ final.md 内容: OK
 
 **验证**：隔离家目录跑真实 dsh 任务 → 用户 `~/.dsh/sessions` 计数 67→67 不变，
 新会话落在 `~/.lcs/dsh-home/sessions/`；子进程 `invocation.json` 记录 `dshHome` 正确。
+
+### 18.1 GC 可审计化（事故后追加）
+
+- `gcExpired(config, store, now, { dryRun?, maxPerCall? })` 返回逐 task 明细
+  （`details[]`）与隔离家目录内**陌生会话数**（`foreignSessions`，只统计不删）；
+- `engine.runGc()` 把每次动作写入 `store.gcLog`（最多 200 条，最新在前）；
+- `GET /api/status` 暴露 `gc: { dshHome, sessionRetentionDays, recent }`；
+- `POST /api/gc { dryRun }` 供 Web「预览清理」与 `lcs-mcp gc` 调用；
+- Web 概览页「清理审计」卡片：展示最近动作 + 预览按钮 + 作用域提示。

@@ -332,6 +332,24 @@ async function handleRequest(
     );
   }
 
+  // ---------------------------------------------------------------- gc
+  // 清理审计：POST /api/gc { dryRun?: true } —— 预览/执行一次 GC，返回逐 task 明细。
+  // 只处理 LCS 自己登记过的会话与产物，路径限定在 engine.dshHome 内。
+  if (method === "POST" && pathname === "/api/gc") {
+    let dryRun = false;
+    try {
+      const raw = await readBody(req);
+      if (raw.trim()) {
+        const body = JSON.parse(raw) as { dryRun?: boolean };
+        dryRun = body.dryRun === true;
+      }
+    } catch {
+      /* 空 body = 执行（非预览） */
+    }
+    const result = engine.runGc({ dryRun });
+    return sendJson(res, 200, result);
+  }
+
   // ---------------------------------------------------------------- scheduler
   if (method === "POST" && pathname === "/api/scheduler/pause") {
     engine.pause();

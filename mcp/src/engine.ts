@@ -21,7 +21,7 @@ import {
   taskScore,
   type PeakSchedule,
 } from "./policy.js";
-import type { Store } from "./store.js";
+import type { GcLogEntry, Store } from "./store.js";
 import {
   bucketKey,
   bucketShortKey,
@@ -44,7 +44,7 @@ import {
 } from "./types.js";
 import { log, logError, nowMs, uid } from "./util.js";
 import { buildRunners, collectRunnerRoutes, type RunnerMap } from "./runner/index.js";
-import { gcExpired } from "./gc.js";
+import { gcExpired, type GcResult } from "./gc.js";
 import { readCheckpoint } from "./runner/exec.js";
 
 const MAX_DECISIONS = 500;
@@ -256,15 +256,10 @@ export class Engine {
         logError("dispatch 失败", error);
       }
 
-      // 保留策略：定期清理过期的 dsh 会话 / 产物（共享 ~/.dsh 下的自净）
+      // 保留策略：定期清理「自己登记过的」过期 dsh 会话 / 产物（隔离家目录内）
       if (report.tickId % GC_EVERY_TICKS === 0) {
         try {
-          const gc = gcExpired(this.config, this.store, now);
-          if (gc.removedSessions > 0 || gc.removedArtifacts > 0) {
-            log(
-              `gc: 清理会话 ${gc.removedSessions} 个、投影 ${gc.removedProjections} 个、产物 ${gc.removedArtifacts} 份`,
-            );
-          }
+          this.runGc({});
         } catch (error) {
           report.errors.push(`gc: ${String(error)}`);
         }
@@ -777,6 +772,42 @@ export class Engine {
 
   // ---------------------------------------------------------------- 快照
 
+  /**
+   * 跑一轮清理（或只预览）。
+   *
+   * 只处理 LCS 自己登记过的会话与产物，路径限定在 `engine.dshHome` 内。
+   * 每次动作写一条审计（`store.gcLog`），Web「清理审计」与 `lcs-mcp gc` 共用。
+   */
+  runGc(options: { dryRun?: boolean; maxPerCall?: number } = {}): GcResult {
+    const now = this.now();
+    const result = gcExpired(this.config, this.store, now, options);
+    for (const detail of result.details) {
+      this.store.appendGcLog({
+        ts: now,
+        dryRun: result.dryRun,
+        taskId: detail.taskId,
+        sessionId: detail.sessionId,
+        removedSessions: detail.sessionRemoved ? 1 : 0,
+        removedProjections: detail.projectionRemoved ? 1 : 0,
+        removedArtifacts: detail.artifactsRemoved ? 1 : 0,
+      });
+    }
+    if (result.removedSessions > 0 || result.removedArtifacts > 0) {
+      log(
+        `gc: ${result.dryRun ? "[预览] 将" : ""}清理会话 ${result.removedSessions} 个、` +
+          `投影 ${result.removedProjections} 个、产物 ${result.removedArtifacts} 份` +
+          `（隔离家目录内；陌生会话 ${result.foreignSessions} 个不动）`,
+      );
+    }
+    this.store.persist();
+    return result;
+  }
+
+  /** 最近清理审计（最新在前）。 */
+  recentGc(limit = 20): GcLogEntry[] {
+    return this.store.gcLog.slice(0, limit);
+  }
+
   snapshot(): Record<string, unknown> {
     const now = this.now();
     const buckets: BucketSnapshot[] = this.lastBuckets.map((b) =>
@@ -789,6 +820,12 @@ export class Engine {
     return {
       now,
       scheduler: this.schedulerState(),
+      gc: {
+        // 清理只发生在 LCS 专用家目录内；这里把「删了什么」摊开给用户审
+        dshHome: this.config.engine.dshHome,
+        sessionRetentionDays: this.config.engine.sessionRetentionDays,
+        recent: this.recentGc(10),
+      },
       policy: {
         name: this.config.policy.name,
         burnLeadMinutes: this.config.policy.burnLeadMinutes,

@@ -134,6 +134,7 @@ function renderStatus() {
   renderCounts(status.taskCounts || {});
   renderRunning(status.running || []);
   renderDecisions(status.recentDecisions || []);
+  renderGc(status.gc || {});
   renderEngineInfo(status);
   renderCapacityBuckets($("capacity-buckets"), status.buckets);
 }
@@ -227,6 +228,44 @@ function renderDecisions(decisions) {
               <td class="mono">${esc(d.bucket)}</td>
               <td><span class="reason ${d.admit ? "ok" : "no"}">${esc(label)}</span></td>
               <td class="mono">${d.remaining === null ? "?" : Number(d.remaining).toFixed(1)} / ${Number(d.reserve).toFixed(1)} / ${Number(d.est).toFixed(1)}</td>
+            </tr>`;
+          })
+          .join("")}
+      </tbody>
+    </table>`;
+}
+
+/**
+ * 清理审计：让「删了什么 / 会删什么」对用户可见。
+ * GC 只处理 LCS 自己登记过的会话与产物，路径限定在隔离家目录内。
+ */
+function renderGc(gc) {
+  const target = $("gc-log");
+  if (!target) return;
+  const recent = gc.recent || [];
+  $("gc-scope").textContent = gc.dshHome
+    ? `只清理 ${gc.dshHome} 内的自有会话 · 保留 ${gc.sessionRetentionDays ?? "-"} 天`
+    : "";
+  if (recent.length === 0) {
+    target.innerHTML = `<div class="empty">还没有清理记录（GC 只删 LCS 自己登记过的会话，不碰用户 dsh 会话）</div>`;
+    return;
+  }
+  target.innerHTML = `
+    <table class="tbl">
+      <thead><tr><th>时间</th><th>任务</th><th>会话</th><th>动作</th></tr></thead>
+      <tbody>
+        ${recent
+          .slice(0, 8)
+          .map((e) => {
+            const acts = [];
+            if (e.removedSessions) acts.push("会话");
+            if (e.removedProjections) acts.push("投影");
+            if (e.removedArtifacts) acts.push("产物");
+            return `<tr>
+              <td>${fmtTime(e.ts)}</td>
+              <td class="mono">${esc((e.taskId || "").slice(-10))}</td>
+              <td class="mono">${e.sessionId ? esc(e.sessionId.slice(0, 20)) + "…" : "-"}</td>
+              <td>${e.dryRun ? "预览：" : ""}${esc(acts.join(" + ") || "-")}</td>
             </tr>`;
           })
           .join("")}
@@ -801,6 +840,24 @@ function bindEvents() {
       fail(error);
     } finally {
       $("btn-tick").disabled = false;
+    }
+  });
+
+  $("btn-gc-preview").addEventListener("click", async () => {
+    $("btn-gc-preview").disabled = true;
+    try {
+      const result = await api("/api/gc", { method: "POST", body: JSON.stringify({ dryRun: true }) });
+      const items = (result.details || []).length;
+      toast(
+        `清理预览：${items} 个任务将被清理` +
+          `（会话 ${result.removedSessions} · 投影 ${result.removedProjections} · 产物 ${result.removedArtifacts}）` +
+          `\n隔离家目录内的陌生会话 ${result.foreignSessions} 个：不动`,
+      );
+      await refreshStatus();
+    } catch (error) {
+      fail(error);
+    } finally {
+      $("btn-gc-preview").disabled = false;
     }
   });
 
