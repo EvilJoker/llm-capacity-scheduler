@@ -13,14 +13,25 @@
 
 **v0.3 执行模型**：执行器只有 **dsh headless**，任务**串行**执行（一个完成再下一个）；
 每个 task 绑定一个 dsh session + 固定工作目录；「换模型」只是换 dsh 后端的大模型。
+dsh 会话写在 **专用隔离家目录** `~/.lcs/dsh-home`，与用户自己的 `~/.dsh` 物理隔离。
 设计见 [`docs/DSH-EXECUTION-DESIGN.md`](docs/DSH-EXECUTION-DESIGN.md)。
+
+**三种角色**：常驻调度服务（`lcs-mcp serve`，7×24）+ dsh 执行器（子进程）+ 客户端
+（MCP Server / dsh 插件，都是薄客户端）。
 
 ## 快速开始
 
 ```bash
 npm install -g llm-capacity-scheduler-mcp   # Node.js >= 20
 lcs-mcp init                                # 生成 ~/.lcs/config.json
-lcs-mcp serve                               # 调度器 + Web：http://127.0.0.1:7788
+lcs-mcp serve                               # 常驻：调度器 + Web：http://127.0.0.1:7788
+lcs-mcp doctor                              # 自检：dsh / 配置 / 凭据 / 隔离 / 插件接线还差什么
+```
+
+dsh 里想直接用原生工具（`lcs_submit_task` 等，免手写 MCP 配置）：
+
+```bash
+dsh plugin --profile web add llm-capacity-scheduler-mcp   # 插件是纯客户端，装完重启 dsh
 ```
 
 接入 provider 不用手改配置：打开 Web → **配置 → Provider → 「＋ 添加 LLM」**，
@@ -29,6 +40,11 @@ lcs-mcp serve                               # 调度器 + Web：http://127.0.0.1
 `apiKey` / `apiKeyEnv` / `apiKeyFile` 三种方式。
 
 ![添加 LLM](docs/images/add-provider.png)
+
+容量页给每个桶画**余量趋势**（虚线是 reserve，即「从此刻到窗口结束要留给自己的量」），
+一眼看出「为什么现在不烧 / 什么时候会烧」：
+
+![余量趋势](docs/images/capacity-sparkline.png)
 
 agent 侧在 MCP 客户端里加一条 stdio server：
 

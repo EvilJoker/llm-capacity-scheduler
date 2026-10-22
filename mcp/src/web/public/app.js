@@ -551,9 +551,83 @@ async function refreshSamples() {
     $("samples").innerHTML = state.samples.length
       ? `<table><thead><tr><th>时间</th><th>桶</th><th>余量</th><th>来源</th></tr></thead><tbody>${rows}</tbody></table>`
       : `<div class="empty">暂无采样</div>`;
+    renderSparklines(state.status?.buckets || [], state.samples);
   } catch (error) {
     fail(error);
   }
+}
+
+/**
+ * 余量趋势（每个桶一条折线 + reserve 虚线与当前余量）。
+ * 纯 SVG，无第三方依赖；宽高用 viewBox 自适应容器。
+ */
+function renderSparklines(buckets, samples) {
+  const target = $("capacity-sparklines");
+  if (!target) return;
+  const byKey = new Map();
+  for (const sample of samples || []) {
+    if (sample.remaining === null || sample.remaining === undefined) continue;
+    if (!byKey.has(sample.bucketKey)) byKey.set(sample.bucketKey, []);
+    byKey.get(sample.bucketKey).push(sample);
+  }
+  if (byKey.size === 0) {
+    target.innerHTML = `<div class="empty">还没有采样：等一轮调度（或点「刷新容量」）就会出现趋势</div>`;
+    return;
+  }
+  const bucketByKey = new Map((buckets || []).map((b) => [b.key, b]));
+  target.innerHTML = [...byKey.entries()]
+    .map(([key, list]) => {
+      const bucket = bucketByKey.get(key) || {};
+      const sorted = list.slice().sort((a, b) => a.ts - b.ts);
+      return `<div class="sparkline">
+        <div class="sparkline-head">
+          <span class="mono">${esc(key)}</span>
+          <span class="hint">${sparkSummary(sorted, bucket)}</span>
+        </div>
+        ${sparkSvg(sorted, bucket)}
+      </div>`;
+    })
+    .join("");
+}
+
+function sparkSummary(sorted, bucket) {
+  const last = sorted[sorted.length - 1];
+  const parts = [`当前 ${Number(last.remaining).toFixed(0)}%`];
+  if (bucket.reservePct !== undefined) parts.push(`reserve ${Number(bucket.reservePct).toFixed(1)}%`);
+  if (bucket.minutesToEnd !== null && bucket.minutesToEnd !== undefined) {
+    parts.push(`窗口还剩 ${Math.max(0, Math.round(bucket.minutesToEnd))} 分钟`);
+  }
+  if (sorted.length < 2) parts.push("采样不足，趋势待观察");
+  return parts.join(" · ");
+}
+
+function sparkSvg(sorted, bucket) {
+  const W = 480;
+  const H = 84;
+  const PAD = 6;
+  const t0 = sorted[0].ts;
+  const t1 = sorted[sorted.length - 1].ts;
+  const span = Math.max(1, t1 - t0);
+  const x = (t) => PAD + (W - 2 * PAD) * ((t - t0) / span);
+  const y = (v) => PAD + (H - 2 * PAD) * (1 - Math.max(0, Math.min(100, v)) / 100);
+
+  const points = sorted.map((s) => `${x(s.ts).toFixed(1)},${y(Number(s.remaining)).toFixed(1)}`);
+  const line = `M${points.join(" L")}`;
+  const area = `${line} L${x(t1).toFixed(1)},${(H - PAD).toFixed(1)} L${x(t0).toFixed(1)},${(H - PAD).toFixed(1)} Z`;
+
+  const reserve = Number(bucket.reservePct);
+  const reserveLine = Number.isFinite(reserve)
+    ? `<line x1="${PAD}" y1="${y(reserve).toFixed(1)}" x2="${W - PAD}" y2="${y(reserve).toFixed(1)}"
+         stroke="var(--warn, #d08c00)" stroke-width="1" stroke-dasharray="4 3" opacity="0.8" />`
+    : "";
+
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img">
+    <line x1="${PAD}" y1="${y(100).toFixed(1)}" x2="${W - PAD}" y2="${y(100).toFixed(1)}" stroke="var(--border)" stroke-width="1" opacity="0.5" />
+    <line x1="${PAD}" y1="${y(0).toFixed(1)}" x2="${W - PAD}" y2="${y(0).toFixed(1)}" stroke="var(--border)" stroke-width="1" opacity="0.5" />
+    <path d="${area}" fill="var(--accent, #4c9aff)" opacity="0.12" />
+    <path d="${line}" fill="none" stroke="var(--accent, #4c9aff)" stroke-width="1.6" stroke-linejoin="round" />
+    ${reserveLine}
+  </svg>`;
 }
 
 // --------------------------------------------------------------------- 配置
