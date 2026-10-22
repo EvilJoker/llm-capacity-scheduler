@@ -45,7 +45,7 @@ test("runs 统计：committed / runningCount / completed", () => {
     assignmentId: "asg_1",
     provider: "mock",
     model: "general",
-    runner: "shell",
+    runner: "dsh",
     bucketKey: "mock/general/text_tokens/w",
     est: 6,
     pid: 123,

@@ -65,11 +65,10 @@
           <form id="task-form" class="form-grid">
             <label>执行器
               <select id="f-runner">
-                <option value="shell">shell（本地命令）</option>
                 <option value="dsh">dsh headless（LLM 任务）</option>
               </select>
             </label>
-            <label id="f-cmd-wrap" class="span2">命令（shell）
+            <label id="f-cmd-wrap" class="span2">任务文本 / 命令
               <textarea id="f-cmd" rows="2" placeholder='["python3","jobs/summarize.py"] 或 python3 jobs/summarize.py'></textarea>
             </label>
             <label id="f-prompt-wrap" class="span2 hidden">任务文本（dsh headless）
@@ -169,6 +168,9 @@
           </label>
           <label>名称（可选，用于区分多个 Key）
             <input id="p-name" name="name" placeholder="minimax" />
+          </label>
+          <label>模型（这个 Key 用来跑哪个模型）
+            <select id="p-model" name="model"></select>
           </label>
           <label class="span2">API Key
             <input id="p-apikey" name="apiKey" type="password" autocomplete="off"

@@ -11,6 +11,10 @@
 **单语言栈**：整个产品（MCP Server / 调度器 / 执行器 / Web 控制台）都是 TypeScript + Node，
 位于 `mcp/`。v0.1 的 Python 参考实现已归档到 tag `v0.1-python` 并从主干移除。
 
+**v0.3 执行模型**：执行器只有 **dsh headless**，任务**串行**执行（一个完成再下一个）；
+每个 task 绑定一个 dsh session + 固定工作目录；「换模型」只是换 dsh 后端的大模型。
+设计见 [`docs/DSH-EXECUTION-DESIGN.md`](docs/DSH-EXECUTION-DESIGN.md)。
+
 ## 快速开始
 
 ```bash
@@ -101,11 +105,11 @@ runner × est × route）、**Queue**（任务状态的派生视图，不是独�
 ```
 llm-capacity-scheduler/
 ├── mcp/                         # 产品：npm 包（MCP Server + Web 控制台 + 调度器）
-│   ├── src/{engine,policy,store,backend,mcp,cli,provider-presets}.ts
+│   ├── src/{engine,policy,store,backend,mcp,cli,provider-presets,dsh-profile,gc}.ts
 │   ├── src/capacity/{minimax,payg,mock}.ts
 │   ├── src/runner/{shell,dsh}.ts
 │   ├── src/web/{server.ts,public/}
-│   ├── src/test/                # 40 个 node:test 用例
+│   ├── src/test/                # 49 个 node:test 用例
 │   └── README.md
 ├── docs/
 │   ├── MCP-DESIGN.md            # v0.2 定稿：6 实体模型 / 队列语义 / MCP+Web 架构
@@ -121,7 +125,7 @@ llm-capacity-scheduler/
 cd mcp
 npm install
 npm run build
-npm test        # 40 个用例：策略 / 存储 / adapter / 引擎 e2e / Web API / MCP 闭环
+npm test        # 49 个用例：策略 / 存储 / adapter / 引擎 e2e / Web API / MCP 闭环 / 配置迁移 / GC
 npm run dev -- serve
 ```
 
@@ -139,4 +143,4 @@ npm run dev -- serve
 |---|---|---|
 | v0.1 | Python 参考引擎：容量模型 / reserve / SQLite / shell runner / CLI | ✅ **已归档**（tag `v0.1-python`） |
 | **v0.2** | **TypeScript 单栈：npm MCP Server + Web 控制台 + Assignment/ModelCatalog + dsh runner + 窗口抢占/续跑** | ✅ 当前 |
-| v0.3 | npm 发布、dsh headless 实机联调、消耗校准 canary、沙箱与审批、第三个 provider（证伪抽象） | 计划 |
+| **v0.3** | **dsh-only + 串行执行 + session 绑定 + usage 计量 + 会话保留策略**（M1–M4 已实现，M6 真机验证通过）；剩余：npm 发布、沙箱与审批、第二个厂商 | 🚧 进行中 |

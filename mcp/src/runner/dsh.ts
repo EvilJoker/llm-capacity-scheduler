@@ -1,25 +1,44 @@
 /**
- * dsh headless runner：把任务交给 `dsh --profile headless --json "<task>"`。
+ * dsh headless runner：LCS 唯一的执行器。
  *
- * checkpoint = dsh 的 `--session-id`：中断/失败后下次重跑可以续上同一个 session，
- * 这是「没完成就放回队列」最省额度的实现方式。
+ * 调用契约（实测，dsh 0.2.0-rc.2）：
+ *   dsh --profile <profile> --patch <run.patch.yml> --json [--session-id <id>] "<task>"
  *
- * 路由注入：Assignment 里的 provider/model 通过环境变量传下去；
- * 若配置了 `runners.dsh.profiles`，则把 provider 映射成对应的 dsh profile。
+ * - stdout 是 NDJSON 事件流；stderr 是 `dsh:` 诊断行；
+ * - `--session-id` 只能接管已存在的 session（未知 id 直接失败）；
+ * - 接管要求 cwd 一致 → 每个 task 使用固定工作目录（task.workDir）；
+ * - patch 只覆盖 agent-default-model（provider + model），路由定义在 profile 层；
+ * - Key 由调度器按 provider 注入环境变量（apiKeyEnv），保证烧的账号 = 记账的账号。
  */
 
 import fs from "node:fs";
 import path from "node:path";
 
 import type { DshRunnerConfig } from "../config.js";
+import { ensureRunPatch } from "../dsh-profile.js";
 import type { Assignment, Run, Task } from "../types.js";
 import { resolvePath } from "../util.js";
 import { CHECKPOINT_FILE } from "./exec.js";
+import { parseDshEvents } from "./events.js";
 import type { SpawnRunnerOptions } from "./spawn-runner.js";
 import { SpawnRunner } from "./spawn-runner.js";
 
+export interface DshRouteLike {
+  route: string;
+  apiKeyEnv: string;
+  defaultModel: string;
+  models: string[];
+}
+
+/** dsh 的答案默认落盘为该文件（任务可用 expect_artifacts 声明它）。 */
+export const FINAL_ARTIFACT = "final.md";
+
 export interface DshRunnerOptions extends SpawnRunnerOptions {
   dsh: DshRunnerConfig;
+  /** provider 名 → dsh 路由 */
+  routes: Record<string, DshRouteLike>;
+  /** provider 名 → 该 provider 的 Key（明文，仅注入子进程 env 用） */
+  keys: Record<string, string | null>;
 }
 
 export class DshRunner extends SpawnRunner {
@@ -36,95 +55,98 @@ export class DshRunner extends SpawnRunner {
   protected buildCommand(task: Task, assignment: Assignment, run: Run) {
     const prompt = (task.spec.prompt ?? task.spec.cmd?.join(" ") ?? "").trim();
     if (!prompt) throw new Error("dsh runner 需要 task.spec.prompt（或 cmd 作为任务文本）");
-    const profile = this.dsh.profiles[assignment.provider] ?? this.dsh.profile;
-    const args: string[] = ["--profile", profile, "--json"];
-    if (task.checkpoint?.sessionId) {
-      args.push("--session-id", task.checkpoint.sessionId);
-      args.push(`${prompt}\n\n继续把上次未完成的部分做完。`);
-    } else {
-      args.push(prompt);
+
+    const route = this.dshOptions.routes[assignment.provider];
+    if (!route) throw new Error(`provider ${assignment.provider} 没有 dsh 路由配置`);
+    const model = assignment.model || route.defaultModel;
+    if (route.models.length > 0 && !route.models.includes(model)) {
+      throw new Error(
+        `模型 ${model} 不在 provider ${assignment.provider} 的可用模型内（${route.models.join("、")}）`,
+      );
     }
-    const cwd = task.spec.cwd ? resolvePath(task.spec.cwd, this.options.baseDir) : this.options.baseDir;
-    return {
-      command: this.dsh.command,
-      args,
-      cwd,
-      env: {
-        ...process.env,
-        ...task.spec.env,
-        ...assignment.route,
-        DSH_PROFILE: profile,
-        LCS_ARTIFACT_DIR: run.runDir,
-      },
+
+    const patchFile = ensureRunPatch(this.dsh.patchDir, route.route, model);
+    const sessionId = task.checkpoint?.sessionId;
+
+    const args: string[] = ["--profile", this.dsh.profile, "--patch", patchFile, "--json"];
+    if (sessionId) args.push("--session-id", sessionId);
+    args.push(prompt);
+
+    // 每 task 固定工作目录：dsh 接管 session 要求 cwd 一致
+    const cwd = task.workDir
+      ? resolvePath(task.workDir, this.options.baseDir)
+      : task.spec.cwd
+        ? resolvePath(task.spec.cwd, this.options.baseDir)
+        : this.options.baseDir;
+    fs.mkdirSync(cwd, { recursive: true });
+
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      ...task.spec.env,
+      ...assignment.route,
+      DSH_PROFILE: this.dsh.profile,
+      LCS_ARTIFACT_DIR: run.runDir,
     };
+    // Key 注入：只走环境变量，命令行与 patch 都不出现明文
+    const key = this.dshOptions.keys[assignment.provider];
+    if (key && route.apiKeyEnv) env[route.apiKeyEnv] = key;
+
+    return { command: this.dsh.command, args, cwd, env };
   }
 
   protected override async afterComplete(task: Task, run: Run): Promise<void> {
+    const summary = parseDshEvents(readStdout(run.runDir));
+    // dsh 把答案打在 stdout，不会自己写文件 → 落成 final.md 作为默认产物
+    if (summary.finalText !== undefined) {
+      const finalFile = path.join(run.runDir, FINAL_ARTIFACT);
+      if (!fs.existsSync(finalFile)) {
+        try {
+          fs.writeFileSync(finalFile, summary.finalText, { encoding: "utf8" });
+        } catch {
+          /* 写不进去不影响主流程（产物校验会失败） */
+        }
+      }
+    }
     if (task.checkpoint?.sessionId) return;
-    const sessionId = extractSessionId(path.join(run.runDir, "stdout.log"));
-    if (!sessionId) return;
+    if (!summary.sessionId) return;
     const file = path.join(run.runDir, CHECKPOINT_FILE);
     if (fs.existsSync(file)) return;
     try {
       fs.writeFileSync(
         file,
-        JSON.stringify({ sessionId, updatedAt: Date.now() }, null, 2),
+        JSON.stringify({ sessionId: summary.sessionId, updatedAt: Date.now() }, null, 2),
         { encoding: "utf8", mode: 0o600 },
       );
     } catch {
       /* checkpoint 写不进去不影响主流程 */
     }
   }
+
+  /** 事件流里的 session/usage/final 交给引擎收口时记账。 */
+  override async poll(task: Task, run: Run, now: number) {
+    const result = await super.poll(task, run, now);
+    if (!result) return null;
+    const summary = parseDshEvents(readStdout(run.runDir));
+    const usage = summary.usage ? { ...summary.usage } : undefined;
+    const error = summary.error
+      ? `${summary.error.code ?? "dsh-error"}: ${summary.error.message ?? ""}`.trim()
+      : result.error;
+    return {
+      ...result,
+      usage,
+      error,
+      sessionId: summary.sessionId,
+      checkpoint: summary.sessionId
+        ? { sessionId: summary.sessionId, updatedAt: Date.now() }
+        : result.checkpoint,
+    };
+  }
 }
 
-/** 从 dsh --json 的事件流里抓 session id（形如 session-<uuid>）。 */
-export function extractSessionId(stdoutFile: string): string | undefined {
-  let text: string;
+function readStdout(runDir: string): string {
   try {
-    const stat = fs.statSync(stdoutFile);
-    const fd = fs.openSync(stdoutFile, "r");
-    const length = Math.min(stat.size, 2 * 1024 * 1024);
-    const buffer = Buffer.alloc(length);
-    fs.readSync(fd, buffer, 0, length, 0);
-    fs.closeSync(fd);
-    text = buffer.toString("utf8");
+    return fs.readFileSync(path.join(runDir, "stdout.log"), "utf8");
   } catch {
-    return undefined;
+    return "";
   }
-  for (const line of text.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed || (trimmed[0] !== "{" && trimmed[0] !== "[")) continue;
-    try {
-      const parsed = JSON.parse(trimmed) as unknown;
-      const id = findSessionId(parsed);
-      if (id) return id;
-    } catch {
-      /* 非 JSON 行忽略 */
-    }
-  }
-  return undefined;
-}
-
-function findSessionId(value: unknown, depth = 0): string | undefined {
-  if (depth > 6 || value === null) return undefined;
-  if (typeof value === "string") {
-    return /^session[-_][\w-]{6,}$/.test(value) ? value : undefined;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const found = findSessionId(item, depth + 1);
-      if (found) return found;
-    }
-    return undefined;
-  }
-  if (typeof value === "object") {
-    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-      if (/session_?id$/i.test(key) && typeof child === "string" && child.length > 6) {
-        return child;
-      }
-      const found = findSessionId(child, depth + 1);
-      if (found) return found;
-    }
-  }
-  return undefined;
 }

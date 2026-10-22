@@ -10,6 +10,7 @@ import { Store } from "../store.js";
 import { bucketKey } from "../types.js";
 import {
   FakeClock,
+  MOCK_DSH,
   buildEngine,
   drain,
   makeConfig,
@@ -26,7 +27,7 @@ const WED_14_35 = new Date(2026, 9, 21, 14, 35).getTime();
 
 function burnTask() {
   return makeTask({
-    cmd: [NODE, "-e", "require('fs').writeFileSync('out.txt','burned')"],
+    cmd: ["fake-task"],
     spec: { expectedDurationS: 1, timeoutS: 30, expectArtifacts: ["out.txt"] },
   });
 }
@@ -48,8 +49,9 @@ test("端到端：14:00 等待 → 14:35 开烧 → 烧到 reserve 停 → 产�
   assert.ok(tasks.every((t) => ["queued", "deferred"].includes(engine.store.getTask(t.id)!.state)));
 
   clock.set(WED_14_35);
+  // v0.3 串行：一轮最多 spawn 1 个
   const tail = await engine.tick();
-  assert.equal(tail.spawned.length, 2);
+  assert.equal(tail.spawned.length, 1);
 
   await drain(engine, clock);
 
@@ -67,7 +69,7 @@ test("端到端：14:00 等待 → 14:35 开烧 → 烧到 reserve 停 → 产�
     clock.advance(5000);
   }
 
-  // 产物与验收
+  // 产物与验收（dsh 的答案自动落成 final.md）
   const okTask = succeeded[0];
   const run = engine.store.runsForTask(okTask.id).find((r) => r.status === "succeeded");
   assert.ok(run);
@@ -75,6 +77,8 @@ test("端到端：14:00 等待 → 14:35 开烧 → 烧到 reserve 停 → 产�
   assert.ok(run?.artifacts.includes("out.txt"));
   assert.ok(fs.existsSync(path.join(run!.runDir, "out.txt")));
   assert.equal(fs.readFileSync(path.join(run!.runDir, "out.txt"), "utf8"), "burned");
+  assert.ok(run?.artifacts.includes("final.md"), "dsh 答案应落成 final.md");
+  assert.equal(fs.readFileSync(path.join(run!.runDir, "final.md"), "utf8"), "ok");
 });
 
 test("空闲时段：一刷新就烧", async () => {
@@ -87,7 +91,15 @@ test("空闲时段：一刷新就烧", async () => {
         name: "mock",
         kind: "mock",
         enabled: true,
-        options: { family: "general", start: "20:00", end: "01:00", initialRemaining: 90, burnPerRun: 6 },
+        options: {
+          family: "general",
+          start: "20:00",
+          end: "01:00",
+          initialRemaining: 90,
+          burnPerRun: 6,
+          apiKey: "mock-key",
+          dsh: MOCK_DSH,
+        },
       },
     ],
     policy: { windowGraceSeconds: 1 },
@@ -154,6 +166,8 @@ test("窗口边界：在飞 run 被抢占为 interrupted 并重排（attempts+1�
           endAt: start + 3000,
           initialRemaining: 80,
           burnPerRun: 0,
+          apiKey: "mock-key",
+          dsh: MOCK_DSH,
         },
       },
     ],
@@ -161,7 +175,7 @@ test("窗口边界：在飞 run 被抢占为 interrupted 并重排（attempts+1�
   });
   const engine = buildEngine(config, clock, dir);
   const task = makeTask({
-    cmd: [NODE, "-e", "setTimeout(()=>{}, 5000)"],
+    cmd: ["SLOW"],
     spec: { expectedDurationS: 1, timeoutS: 30 },
   });
   engine.store.submit(task);
@@ -186,11 +200,7 @@ test("Assignment 路由注入：任务能拿到 LCS_PROVIDER / LCS_MODEL", async
   const config = makeConfig({ dir, policy: { windowGraceSeconds: 1 } });
   const engine = buildEngine(config, clock, dir);
   const task = makeTask({
-    cmd: [
-      NODE,
-      "-e",
-      "require('fs').writeFileSync('env.txt', [process.env.LCS_PROVIDER, process.env.LCS_MODEL, process.env.LCS_ASSIGNMENT_ID].join('/'))",
-    ],
+    cmd: ["fake-task"],
     spec: { expectedDurationS: 1, timeoutS: 30, expectArtifacts: ["env.txt"] },
   });
   engine.store.submit(task);
@@ -200,7 +210,22 @@ test("Assignment 路由注入：任务能拿到 LCS_PROVIDER / LCS_MODEL", async
   const state = await waitForTask(engine, clock, task.id);
   assert.equal(state, "succeeded");
   const run = engine.store.runsForTask(task.id)[0];
-  assert.equal(fs.readFileSync(path.join(run.runDir, "env.txt"), "utf8"), "mock/general/" + run.assignmentId);
+  assert.equal(
+    fs.readFileSync(path.join(run.runDir, "env.txt"), "utf8"),
+    "mock/mock-model/" + run.assignmentId,
+  );
+  // dsh 调用现场：profile / patch / env 注入
+  const invocation = JSON.parse(
+    fs.readFileSync(path.join(run.runDir, "invocation.json"), "utf8"),
+  ) as { profile: string; patch: string; env: Record<string, string> };
+  assert.equal(invocation.profile, "lcs-test");
+  assert.ok(invocation.patch.endsWith(".yml"));
+  assert.equal(invocation.env.LCS_DSH_ROUTE, "mock");
+  assert.equal(invocation.env.LCS_MOCK_API_KEY, "mock-key");
+  // session 绑定：首跑产出 sessionId 并写进 checkpoint
+  assert.ok(run.sessionId);
+  const task2 = engine.store.getTask(task.id)!;
+  assert.equal(task2.checkpoint?.sessionId, run.sessionId);
 });
 
 test("验收失败 → failed（maxAttempts=1）", async () => {
@@ -209,7 +234,7 @@ test("验收失败 → failed（maxAttempts=1）", async () => {
   const config = makeConfig({ dir, policy: { windowGraceSeconds: 1, maxAttempts: 1 } });
   const engine = buildEngine(config, clock, dir);
   const task = makeTask({
-    cmd: [NODE, "-e", "require('fs').writeFileSync('out.txt','x')"],
+    cmd: ["NOARTIFACT"],
     spec: {
       expectedDurationS: 1,
       timeoutS: 30,
@@ -223,7 +248,7 @@ test("验收失败 → failed（maxAttempts=1）", async () => {
   assert.equal(state, "failed");
   const run = engine.store.runsForTask(task.id)[0];
   assert.equal(run.verified, false);
-  assert.match(String(run.error), /verifier/);
+  assert.match(String(run.error), /产物|verifier/);
 });
 
 test("幂等键：重复提交只有一个任务", async () => {

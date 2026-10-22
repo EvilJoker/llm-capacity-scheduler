@@ -10,6 +10,7 @@
  *   ⑥ publish   快照给 Web / MCP
  */
 
+import fs from "node:fs";
 import path from "node:path";
 
 import type { Config } from "./config.js";
@@ -42,12 +43,15 @@ import {
   type TickReport,
 } from "./types.js";
 import { log, logError, nowMs, uid } from "./util.js";
-import { buildRunners, type RunnerMap } from "./runner/index.js";
+import { buildRunners, collectRunnerRoutes, type RunnerMap } from "./runner/index.js";
+import { gcExpired } from "./gc.js";
 import { readCheckpoint } from "./runner/exec.js";
 
 const MAX_DECISIONS = 500;
 const MAX_TICKS = 50;
 const MAX_SAMPLES = 5000;
+/** 每 N 个 tick 做一次会话/产物 GC（共享 ~/.dsh 下的保留策略） */
+const GC_EVERY_TICKS = 30;
 
 export interface EngineOptions {
   config: Config;
@@ -73,6 +77,8 @@ export class Engine {
   policy: BurnBeforeExpiryPolicy;
   private adapters: Adapter[];
   private runners: RunnerMap;
+  /** provider → dsh 路由（只有带 dsh 段的 provider 才能被执行） */
+  private runnerRoutes: Record<string, { route: string; apiKeyEnv: string; defaultModel: string; models: string[] }>;
   private clock: () => number;
   private timer: NodeJS.Timeout | null = null;
   private ticking = false;
@@ -94,6 +100,7 @@ export class Engine {
     this.policy = new BurnBeforeExpiryPolicy(this.config.policy);
     this.adapters = options.adapters ?? buildAdapters(this.config.providers, { store: this.store });
     this.runners = options.runners ?? buildRunners(this.config, this.baseDir);
+    this.runnerRoutes = collectRunnerRoutes(this.config);
   }
 
   now(): number {
@@ -107,6 +114,7 @@ export class Engine {
     this.policy = new BurnBeforeExpiryPolicy(config.policy);
     this.adapters = buildAdapters(config.providers, { store: this.store });
     this.runners = buildRunners(config, baseDir);
+    this.runnerRoutes = collectRunnerRoutes(config);
     if (this.started) {
       this.stop();
       this.start();
@@ -248,6 +256,20 @@ export class Engine {
         logError("dispatch 失败", error);
       }
 
+      // 保留策略：定期清理过期的 dsh 会话 / 产物（共享 ~/.dsh 下的自净）
+      if (report.tickId % GC_EVERY_TICKS === 0) {
+        try {
+          const gc = gcExpired(this.config, this.store, now);
+          if (gc.removedSessions > 0 || gc.removedArtifacts > 0) {
+            log(
+              `gc: 清理会话 ${gc.removedSessions} 个、投影 ${gc.removedProjections} 个、产物 ${gc.removedArtifacts} 份`,
+            );
+          }
+        } catch (error) {
+          report.errors.push(`gc: ${String(error)}`);
+        }
+      }
+
       report.durationMs = Date.now() - startedAt;
       this.lastTickAt = now;
       this.lastBuckets = buckets;
@@ -342,6 +364,7 @@ export class Engine {
       verified: result.verified,
       artifacts: result.artifacts,
       usage: result.usage ?? {},
+      sessionId: result.sessionId ?? run.sessionId ?? null,
       error: result.error,
       quotaDelta: delta,
     });
@@ -375,6 +398,7 @@ export class Engine {
       this.store.transition(task.id, from, "succeeded", {
         attempts,
         checkpoint,
+        finishedAt: now,
         error: undefined,
       });
       return "succeeded";
@@ -395,6 +419,7 @@ export class Engine {
     this.store.transition(task.id, from, "failed", {
       attempts,
       checkpoint,
+      finishedAt: now,
       error: result.error ?? `run ${run.id} ${result.status}`,
     });
     return "failed";
@@ -442,8 +467,10 @@ export class Engine {
   // ---------------------------------------------------------------- 派发
 
   private async dispatch(now: number, buckets: Bucket[], report: TickReport): Promise<void> {
+    // v0.3：串行执行 —— 同一时刻只允许一个任务在跑
+    const maxParallel = 1;
     const running = this.store.runningRuns();
-    if (running.length >= this.config.engine.maxParallel) return;
+    if (running.length >= maxParallel) return;
 
     const committed = this.store.committedByBucket();
     const runningCount = this.store.runningCountByBucket();
@@ -461,7 +488,7 @@ export class Engine {
     );
 
     for (const task of tasks) {
-      if (totalRunning >= this.config.engine.maxParallel) break;
+      if (totalRunning >= maxParallel) break;
       if (report.decisions.length >= MAX_DECISIONS) break;
       if (task.nextEligibleAtMs !== null && task.nextEligibleAtMs > now) continue;
       if (task.deadlineMs !== null && task.deadlineMs <= now) {
@@ -498,7 +525,7 @@ export class Engine {
         | undefined;
 
       for (const candidate of candidates) {
-        const model = resolveModel(task, candidate, this.config.models);
+        const model = resolveModel(task, candidate, this.config.providers);
         if (!model) {
           this.logDecision(report, {
             taskId: task.id,
@@ -537,7 +564,7 @@ export class Engine {
           ...decision,
         });
         if (decision.admit) {
-          const runner = this.selectRunner(task);
+          const runner = this.selectRunner(task, candidate.provider);
           if (!runner) {
             this.logDecision(report, {
               taskId: task.id,
@@ -597,16 +624,13 @@ export class Engine {
       });
   }
 
-  private selectRunner(task: Task): RunnerName | undefined {
-    const preferred = task.spec.runner ?? this.config.runners.default;
-    const usable = (name: RunnerName): boolean => {
-      if (!this.runners[name]) return false;
-      if (name === "shell") return Boolean(task.spec.cmd?.length);
-      return Boolean(task.spec.prompt ?? task.spec.cmd?.length);
-    };
-    if (usable(preferred)) return preferred;
-    for (const name of ["shell", "dsh"] as RunnerName[]) {
-      if (usable(name)) return name;
+  private selectRunner(task: Task, provider?: string): RunnerName | undefined {
+    const name = this.config.runners.default;
+    if (!this.runners[name]) return undefined;
+    if (provider && !this.runnerRoutes[provider]) return undefined; // 该 provider 没有 dsh 路由
+    if (name === "dsh") {
+      const hasPrompt = Boolean(task.spec.prompt ?? task.spec.cmd?.length);
+      return hasPrompt ? name : undefined;
     }
     return undefined;
   }
@@ -626,6 +650,10 @@ export class Engine {
     const runId = uid("run");
     const assignmentId = uid("asg");
     const runDir = path.join(this.config.engine.artifactsDir, task.id, runId);
+    // 每 task 固定工作目录（dsh session 按 cwd 绑定）
+    const workDir = task.workDir ?? path.join(this.config.engine.workDir, task.id);
+    if (!task.workDir) this.store.updateTask(task.id, { workDir });
+    fs.mkdirSync(workDir, { recursive: true });
     const route: Record<string, string> = {
       LCS_PROVIDER: chosen.bucket.provider,
       LCS_MODEL: chosen.model.model,
@@ -634,11 +662,14 @@ export class Engine {
       LCS_TASK_ID: task.id,
       LCS_RUN_ID: runId,
     };
+    const dshRoute = this.runnerRoutes[chosen.bucket.provider]?.route;
+    if (dshRoute) route.LCS_DSH_ROUTE = dshRoute;
     const assignment: Assignment = {
       id: assignmentId,
       taskId: task.id,
       provider: chosen.bucket.provider,
       model: chosen.model.model,
+      dshRoute,
       runner: chosen.runner,
       est: chosen.est,
       route,
@@ -651,6 +682,8 @@ export class Engine {
       provider: chosen.bucket.provider,
       model: chosen.model.model,
       runner: chosen.runner,
+      sessionId: task.checkpoint?.sessionId ?? null,
+      dshProfile: this.config.runners.dsh.profile,
       bucketKey: bucketKey(chosen.bucket),
       est: chosen.est,
       pid: null,
@@ -698,7 +731,7 @@ export class Engine {
   }
 
   private runnerFor(run: Run) {
-    const runner = this.runners[run.runner] ?? this.runners.shell;
+    const runner = this.runners[run.runner] ?? this.runners.dsh;
     if (!runner) throw new Error(`runner 不可用: ${run.runner}`);
     return runner;
   }
@@ -836,6 +869,8 @@ export class Engine {
       exitCode: run.exitCode,
       verified: run.verified,
       artifacts: run.artifacts,
+      sessionId: run.sessionId ?? null,
+      usage: run.usage ?? {},
       quotaDelta: run.quotaDelta,
       windowEndMs: run.windowEndMs,
       error: run.error ?? null,

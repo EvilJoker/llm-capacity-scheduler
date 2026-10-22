@@ -121,7 +121,7 @@ test("提交任务 → tick → 轮询 → 产物下载", async () => {
     const artifact = await ctx.apiRaw(
       `/api/tasks/${taskId}/artifact?run=${encodeURIComponent(run.id)}&name=out.txt`,
     );
-    assert.equal(artifact, "web-burn");
+    assert.equal(artifact, "burned"); // 假 dsh 写的产物
 
     const status = await ctx.api("/api/status");
     assert.equal(status.data.taskCounts.succeeded, 1);
@@ -198,7 +198,9 @@ test("添加 LLM：厂商预设追加 provider，保存后立即可见新桶", a
 
   try {
     const vendors = await ctx.api("/api/providers/vendors");
-    assert.deepEqual(vendors.data, [{ id: "minimax", label: "MiniMax" }]);
+    assert.equal(vendors.data[0].id, "minimax");
+    assert.equal(vendors.data[0].label, "MiniMax");
+    assert.ok(vendors.data[0].models.includes(vendors.data[0].defaultModel));
 
     const added = await ctx.api("/api/providers", {
       method: "POST",

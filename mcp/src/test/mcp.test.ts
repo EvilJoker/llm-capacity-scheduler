@@ -94,7 +94,7 @@ test("MCP：submit → tick → poll 拿到产物", async () => {
     const configView = JSON.parse(textOf(await client.callTool({ name: "lcs_get_config", arguments: {} }))) as {
       providers: Array<{ options: { apiKey?: string } }>;
     };
-    assert.equal(configView.providers[0].options.apiKey, undefined);
+    assert.equal(configView.providers[0].options.apiKey, "***"); // 脱敏
   } finally {
     await client.close();
     await server.close();

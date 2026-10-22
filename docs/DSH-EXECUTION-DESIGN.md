@@ -1,6 +1,6 @@
 # LCS v0.3 执行器方案：dsh-only · 单 runner · 串行执行
 
-> 状态：**方案定稿，待实现**（2026-10-21）
+> 状态：**M1–M4 已实现，M5 部分完成，M6 真机验证通过**（2026-10-21）
 > 前置：`docs/MCP-DESIGN.md`（v0.2 领域模型）· 实测记录见本文「附录 A」
 
 ---
@@ -47,6 +47,8 @@
 | D10 | 失败**分类处理**：认证/额度类不重试 | 401/额度耗尽重试只会白烧；普通失败按 attempts 上限重试，且**同 session 续跑** |
 | D11 | 窗口抢占 → **同 session 重排**，不新建会话 | 续跑最省额度（`--session-id`），这也是 dsh 的原生语义 |
 | D12 | 模型切换**只改后端模型**，不改 task/session 绑定 | 同 session 内换模型由 dsh 处理，并自动插入 `[model changed: …]` 提示 |
+| D13 | **模型是 provider 级配置**：provider 配一个模型，任务就用它 | 去掉全局 `models[]` 目录与能力匹配选型；模型与「谁的额度」绑定，语义更直 |
+| D14 | **厂商参数只读**（route/api/baseURL/apiKeyEnv/models 由预设写死） | 用户只填 Key 与选模型；填错端点/协议会直接让观测与执行失真 |
 
 ---
 
@@ -192,21 +194,18 @@ dsh 凭据查找优先级：**启动环境 > `~/.dsh/.credentials.yaml` > 项目
         "apiKey": "", "apiKeyEnv": "MINIMAX_API_KEY", "apiKeyFile": "~/.mmx/config.json",
         "endpoint": "https://api.minimaxi.com/v1/token_plan/remains",
         "families": ["general"], "textTokensPerPct": 50000,
-        "dsh": {                                   // 新增：dsh 路由段
+        "dsh": {                                   // 新增：dsh 路由段（厂商预设写死，只读）
           "route": "minimax",                      // dsh 里的路由名（= agent-default-model.provider）
           "api": "anthropic-messages",
           "baseURL": "https://api.minimaxi.com/anthropic",
           "apiKeyEnv": "LCS_MINIMAX_API_KEY",      // 注入用的环境变量名
-          "models": ["MiniMax-M3.1-Flash[1m]"],    // 该路由可用的模型 id
-          "defaultModel": "MiniMax-M3.1-Flash[1m]"
+          "models": ["MiniMax-M3.1-Flash[1m]"],    // 该路由可用的模型 id（预设给定）
+          "defaultModel": "MiniMax-M3.1-Flash[1m]" // 用户在添加 LLM 时选定，可改
         }
       }
     }
   ],
-  "models": [                                      // 能力目录：与 dsh 路由的 models 对齐
-    { "provider": "minimax", "model": "MiniMax-M3.1-Flash[1m]", "family": "general",
-      "context": 1048576, "modalities": ["text"], "qualityTier": "best", "unitPricePer1kTokens": 0 }
-  ],
+  // v0.3 不再有全局 models[] 能力目录：模型由 provider 配置（D13）
   "runners": {
     "default": "dsh",
     "dsh": {
@@ -229,7 +228,8 @@ dsh 凭据查找优先级：**启动环境 > `~/.dsh/.credentials.yaml` > 项目
 | `runners.dsh.{command,profile,profiles}` | `runners.dsh.{command,profile}`；`profiles` 映射废弃（路由改为 provider 自带） |
 | `engine.maxParallel=4` | 强制为 1（并提示「已切换为串行」） |
 | `providers[].options`（无 dsh 段） | 按厂商预设补全 `options.dsh` 默认值 |
-| `models[]` 为空 | 保持为空；由 UI「从 dsh 读取」或手填补齐 |
+| `models[]` 全局能力目录 | **废弃**（模型改由 provider 配置持有） |
+| `providers[].options` 无 dsh 段 | 按厂商预设补全 `options.dsh`（含 models 与 defaultModel） |
 
 ---
 
@@ -259,7 +259,7 @@ dsh 凭据查找优先级：**启动环境 > `~/.dsh/.credentials.yaml` > 项目
 ② tick → dispatch（串行：若已有 run 在跑则跳过）
    ├─ observe：各 provider 容量 → 桶
    ├─ 候选桶：未过期 + 非 unlimited + 任务要求匹配
-   ├─ 选模型：models 目录按 context/quality 匹配 → model id（必须 ∈ dsh 路由 models）
+   ├─ 选模型：取该 provider 配置的模型（`options.dsh.defaultModel`，必须在 `options.dsh.models` 内）
    ├─ 准入：reserve/excess/slots（slots=1）→ admit
    └─ spawn:
         ├─ 生成 patch：agent-default-model{provider: route, model: modelId}
@@ -358,8 +358,8 @@ dsh 凭据查找优先级：**启动环境 > `~/.dsh/.credentials.yaml` > 项目
 | 区域 | 变更 |
 |---|---|
 | **执行器** | 单张卡片「dsh」（不可多实例）：命令、profile、patch 目录、默认超时；顶部提示「当前为串行执行，一次一个任务」 |
-| **Provider 卡片** | 新增折叠段「dsh 路由」：route / api / baseURL / apiKeyEnv / models / defaultModel（由厂商预设给默认值） |
-| **模型目录** | 表格：provider / model / family / context / quality；支持「从 dsh 读取」（`dsh --profile lcs --dump-config`）一键导入 |
+| **Provider 卡片** | 「dsh 路由」段**只读**展示厂商参数（route/api/baseURL/models）+ **可改**的「模型」下拉（选项来自厂商预设） |
+| ~~模型目录~~ | **取消**（模型归 provider 配置，添加 LLM 时选一次即可） |
 | **引擎** | workDir、sessionRetentionDays、`maxParallel` 固定显示为 1（不可改） |
 | **任务详情** | 展示 dsh sessionId、模型、usage tokens、final 文本 |
 
@@ -426,11 +426,40 @@ dsh 凭据查找优先级：**启动环境 > `~/.dsh/.credentials.yaml` > 项目
 
 ---
 
-## 17. 待确认
+## 17. 已确认的决策（2026-10-21，用户拍板）
 
-1. provider 的 `options.dsh` 默认值由**厂商预设**生成（可改）—— 认可？
-2. `models` 目录：**手填** + 提供「从 dsh 读取」按钮（`--dump-config`）—— 认可？
-3. `shell` runner 在 v0.3 **彻底不再参与调度**（文件保留可回退）—— 认可？
+1. **厂商参数用预设默认值，用户不可修改**（D14）：`route/api/baseURL/apiKeyEnv/models` 由厂商预设写死，UI 只读展示；
+2. **provider 增加模型配置，用配置的模型**（D13）：添加 LLM 时选模型（选项来自厂商预设），provider 卡片里可改；全局 `models[]` 目录取消；
+3. **shell runner 在 v0.3 彻底不再参与调度**（D1），代码文件保留以便回退。
+
+---
+
+## 17.1 实现进度（2026-10-21）
+
+| 阶段 | 状态 | 证据 |
+|---|---|---|
+| M1 配置 v2 + 迁移 | ✅ | `migrateConfig()`；老配置启动即升级并落盘（实机日志：`配置已迁移到 v2`） |
+| M2 dsh runner 重写 | ✅ | 事件解析 / patch 生成 / Key 注入 / session 续跑；假 dsh 单测 |
+| M3 引擎串行 + session/usage | ✅ | `maxParallel=1`；run 记录 `sessionId` + `usage` |
+| M4 GC | ✅ | 终态超 TTL → 删会话/投影/产物；非终态不删（单测） |
+| M5 Web UI | ◐ | 执行器卡片（dsh-only/串行提示）、provider 只读路由 + 模型下拉、任务表单 dsh-only；截图待更新 |
+| M6 真机联调 | ✅ | 见下 |
+
+**M6 实测（真实 MiniMax Key，独立临时实例）**
+
+```
+task state: succeeded
+run: model=MiniMax-M3.1-Flash[1m]
+     session=session-44ecde30-3ec2-4ac0-bc2e-722799503236
+     usage={inputTokens:10618, outputTokens:2, totalTokens:10831, cacheReadTokens:211}
+     artifacts=[checkpoint.json, final.md], verified=true
+final.md 内容: OK
+```
+
+**实现期发现并修掉的两个真问题**
+
+1. **dsh 不会自己写产物文件**：答案只在 `final` 事件里。→ runner 在 `afterComplete` 把 `final.text` 落成 `final.md`（`FINAL_ARTIFACT`），任务用 `expect_artifacts: ["final.md"]` 即可。
+2. **产物收集发生在收口时**：写入必须早于 `buildRunResult`，所以放在 `afterComplete` 里而不是 `poll` 返回后。
 
 ---
 

@@ -73,10 +73,10 @@ export function createMcpServer(options: McpServerOptions): McpServer {
         cmd: z
           .array(z.string())
           .optional()
-          .describe("shell runner 的命令数组，例如 ['python3','job.py']"),
+          .describe("任务文本/命令数组（dsh 会把它作为任务提示）"),
         prompt: z.string().optional().describe("dsh headless runner 的任务文本（LLM 任务）"),
         runner: z
-          .enum(["shell", "dsh"])
+          .enum(["dsh"])
           .optional()
           .describe("执行器；默认用配置里的 runners.default"),
         cwd: z.string().optional().describe("执行目录（默认产物目录）"),

@@ -177,7 +177,12 @@ async function handleRequest(
     return sendJson(
       res,
       200,
-      VENDOR_PRESETS.map((vendor) => ({ id: vendor.id, label: vendor.label })),
+      VENDOR_PRESETS.map((vendor) => ({
+        id: vendor.id,
+        label: vendor.label,
+        models: vendor.dsh.models,
+        defaultModel: vendor.dsh.defaultModel,
+      })),
     );
   }
   if (method === "POST" && pathname === "/api/providers") {

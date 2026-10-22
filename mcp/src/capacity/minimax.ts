@@ -9,9 +9,7 @@
  * - base_resp.status_code != 0 是真实错误码
  */
 
-import fs from "node:fs";
-import path from "node:path";
-
+import { resolveProviderKey } from "../provider-key.js";
 import type { Bucket, CapacityWindow } from "../types.js";
 import { unknownBucket, optBool, optNumber, optString, optStringArray } from "./base.js";
 import type { Adapter } from "./base.js";
@@ -49,33 +47,12 @@ export class MinimaxAdapter implements Adapter {
 
   private resolveApiKey(): string | null {
     if (this.cachedKey) return this.cachedKey;
-    const envName = optString(this.options, "apiKeyEnv", "MINIMAX_API_KEY");
-    if (envName && process.env[envName]) {
-      this.cachedKey = process.env[envName]!.trim();
-      return this.cachedKey;
-    }
-    const direct = optString(this.options, "apiKey");
-    if (direct) {
-      this.cachedKey = direct.trim();
-      return this.cachedKey;
-    }
-    const file = optString(this.options, "apiKeyFile");
-    if (file) {
-      try {
-        const data = JSON.parse(fs.readFileSync(path.resolve(file), "utf8")) as Record<
-          string,
-          unknown
-        >;
-        const key = data.api_key ?? data.apiKey ?? data.token;
-        if (typeof key === "string" && key) {
-          this.cachedKey = key.trim();
-          return this.cachedKey;
-        }
-      } catch {
-        /* 读不到就继续 */
-      }
-    }
-    return null;
+    // 默认环境变量名 MINIMAX_API_KEY；配置里显式给了就用配置的
+    const options = { ...this.options };
+    if (typeof options.apiKeyEnv !== "string") options.apiKeyEnv = "MINIMAX_API_KEY";
+    const key = resolveProviderKey(options);
+    if (key) this.cachedKey = key;
+    return this.cachedKey;
   }
 
   async fetch(): Promise<Record<string, unknown>> {

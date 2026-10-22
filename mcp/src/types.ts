@@ -47,7 +47,7 @@ export type RunStatus =
   | "interrupted"
   | "cancelled";
 
-export type RunnerName = "shell" | "dsh";
+export type RunnerName = "dsh";
 
 export interface CapacityWindow {
   lifecycle: Lifecycle;
@@ -116,6 +116,8 @@ export interface TaskRequirements {
 
 export interface Task {
   id: string;
+  /** 每 task 固定的工作目录（dsh session 接管要求 cwd 一致） */
+  workDir?: string;
   idempotencyKey: string;
   taskClass: string;
   spec: TaskSpec;
@@ -130,6 +132,8 @@ export interface Task {
   checkpoint?: TaskCheckpoint;
   createdAt: number;
   updatedAt: number;
+  /** 进入终态的时间，供会话/产物保留策略使用 */
+  finishedAt?: number;
   error?: string;
 }
 
@@ -138,6 +142,8 @@ export interface Assignment {
   taskId: string;
   provider: string;
   model: string;
+  /** dsh 路由名（= agent-default-model.provider） */
+  dshRoute?: string;
   runner: RunnerName;
   est: number;
   route: Record<string, string>;
@@ -151,6 +157,10 @@ export interface Run {
   provider: string;
   model: string;
   runner: RunnerName;
+  /** 本次运行使用的 dsh session（首跑结束后回填） */
+  sessionId?: string | null;
+  /** dsh profile 名 */
+  dshProfile?: string;
   bucketKey: string;
   est: number;
   pid: number | null;
@@ -177,6 +187,8 @@ export interface RunResult {
   usage?: Record<string, unknown>;
   error?: string;
   checkpoint?: TaskCheckpoint;
+  /** dsh session id（续跑用） */
+  sessionId?: string;
 }
 
 export interface Sample {

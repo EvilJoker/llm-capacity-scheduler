@@ -83,6 +83,9 @@ Task ──(Queue 派生视图)──▶ Controller ──(Assignment)──▶ 
   └────────── checkpoint / step ◀──────── Artifact + Verifier ◀───────┘
 ```
 
+**v0.3 执行模型**：执行器只有 dsh headless，任务串行（一次一个）；每个 task 一个 dsh session +
+固定工作目录；模型由 provider 配置决定（`options.dsh.defaultModel`），换模型只换后端大模型。
+
 每个 tick（默认 60s）：
 
 1. **observe** 读所有 provider 容量（MiniMax 5h 窗口 / PAYG 余额 / 自定义 adapter）；
@@ -110,6 +113,7 @@ Task ──(Queue 派生视图)──▶ Controller ──(Assignment)──▶ 
 | 概览 | 容量桶卡片（余量/窗口倒计时/reserve 线）、队列/在飞、最近决策原因、手动 tick / 暂停 |
 | 任务 | 提交表单（shell / dsh headless）、任务表、执行记录、产物在线查看、取消 |
 | 容量 | 桶明细 + 观测记录（每轮调度自动落一条，页面自动刷新），解释「现在为什么不烧」；「刷新容量」手动向 provider 拉一次 |
+| 任务 | 执行器固定 dsh；产物 `final.md` 来自 dsh 的 `final` 事件；run 详情含 sessionId 与 usage tokens |
 | 配置 | 表单 + 原始 JSON 双模式，保存即热加载；Provider 用选项卡管理，「＋ 添加 LLM」按厂商预设接入（当前支持 MiniMax）、「删除」移除该 Key；API Key 脱敏 |
 
 ```bash
@@ -179,7 +183,7 @@ lcs-mcp init                      生成默认配置
 ```bash
 npm install
 npm run build
-npm test                          # node:test，40 个用例（含端到端烧窗口 / Web API / MCP 闭环）
+npm test                          # node:test，49 个用例（含端到端烧窗口 / Web API / MCP 闭环 / 迁移 / GC）
 npm run dev -- serve              # tsx 直跑
 ```
 

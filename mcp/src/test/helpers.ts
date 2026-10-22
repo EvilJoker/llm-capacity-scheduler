@@ -26,6 +26,104 @@ export class FakeClock {
   }
 }
 
+/**
+ * 假 dsh：模拟 `dsh --profile p --patch f --json [--session-id id] "<task>"`
+ * - stdout 输出 NDJSON 事件流（session/status/text/final）
+ * - 把调用现场写进 $LCS_ARTIFACT_DIR/invocation.json（测试据此断言参数与环境变量）
+ * - 产物：out.txt / env.txt（任务文本含 NOARTIFACT 时不写 out.txt）；final.md 由 runner 从 final 事件落盘
+ * - 任务文本含 FAIL → 输出 error 事件并 exit 1；含 SLOW → 睡 30 秒（超时/抢占用）
+ */
+const FAKE_DSH_SOURCE = `#!/usr/bin/env node
+import fs from "node:fs";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+
+const argv = process.argv.slice(2);
+let sessionArg = null;
+let profile = null;
+let patch = null;
+const words = [];
+for (let i = 0; i < argv.length; i += 1) {
+  const a = argv[i];
+  if (a === "--session-id") { sessionArg = argv[i + 1]; i += 1; }
+  else if (a === "--profile") { profile = argv[i + 1]; i += 1; }
+  else if (a === "--patch") { patch = argv[i + 1]; i += 1; }
+  else if (a === "--json") { /* 事件流开关 */ }
+  else words.push(a);
+}
+const task = words.join(" ");
+const artifactDir = process.env.LCS_ARTIFACT_DIR || "";
+const sessionId = sessionArg || "session-" + randomUUID();
+const cwd = process.cwd();
+
+if (artifactDir) {
+  fs.mkdirSync(artifactDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(artifactDir, "invocation.json"),
+    JSON.stringify(
+      {
+        argv,
+        profile,
+        patch,
+        sessionArg,
+        task,
+        cwd,
+        env: {
+          LCS_PROVIDER: process.env.LCS_PROVIDER || null,
+          LCS_MODEL: process.env.LCS_MODEL || null,
+          LCS_FAMILY: process.env.LCS_FAMILY || null,
+          LCS_DSH_ROUTE: process.env.LCS_DSH_ROUTE || null,
+          LCS_ARTIFACT_DIR: process.env.LCS_ARTIFACT_DIR || null,
+          LCS_MOCK_API_KEY: process.env.LCS_MOCK_API_KEY || null,
+          DSH_PROFILE: process.env.DSH_PROFILE || null,
+        },
+      },
+      null,
+      2,
+    ),
+  );
+  fs.writeFileSync(
+    path.join(artifactDir, "env.txt"),
+    [process.env.LCS_PROVIDER, process.env.LCS_MODEL, process.env.LCS_ASSIGNMENT_ID].join("/"),
+  );
+  if (!task.includes("NOARTIFACT")) fs.writeFileSync(path.join(artifactDir, "out.txt"), "burned");
+}
+
+const emit = (obj) => process.stdout.write(JSON.stringify(obj) + "\\n");
+emit({ type: "session", sessionId, cwd });
+emit({ type: "status", phase: "turn_start", turn: 1 });
+
+if (task.includes("FAIL")) {
+  emit({ type: "status", phase: "turn_end", turn: 1, reason: { kind: "error", error: { code: "AUTH", message: "fake auth error" } } });
+  process.exit(1);
+}
+
+if (task.includes("SLOW")) await new Promise((r) => setTimeout(r, 30000));
+
+emit({ type: "status", phase: "step_start", turn: 1, step: 1 });
+emit({ type: "text", text: "ok" });
+emit({ type: "status", phase: "step_end", turn: 1, step: 1, usage: { inputTokens: 1000, outputTokens: 50, totalTokens: 1050, cacheReadTokens: 0 } });
+emit({ type: "status", phase: "turn_end", turn: 1, reason: { kind: "completed" } });
+emit({ type: "final", text: "ok" });
+`;
+
+export function writeFakeDsh(dir: string): string {
+  const file = path.join(dir, "fake-dsh.mjs");
+  fs.writeFileSync(file, FAKE_DSH_SOURCE, "utf8");
+  fs.chmodSync(file, 0o755); // 直接 exec：需要可执行的 shebang 脚本
+  return file;
+}
+
+/** mock provider 的 dsh 路由（测试用） */
+export const MOCK_DSH = {
+  route: "mock",
+  api: "openai-completions",
+  baseURL: "http://mock.invalid",
+  apiKeyEnv: "LCS_MOCK_API_KEY",
+  models: ["mock-model"],
+  defaultModel: "mock-model",
+};
+
 export function makeConfig(overrides: {
   dir: string;
   tickSeconds?: number;
@@ -33,12 +131,14 @@ export function makeConfig(overrides: {
   policy?: Partial<Config["policy"]>;
   maxParallel?: number;
   webPort?: number;
+  fakeDsh?: string;
 }): Config {
   const config = defaultConfig();
   config.engine.tickSeconds = overrides.tickSeconds ?? 60;
   config.engine.stateFile = path.join(overrides.dir, "state.json");
   config.engine.artifactsDir = path.join(overrides.dir, "artifacts");
-  config.engine.maxParallel = overrides.maxParallel ?? 4;
+  config.engine.workDir = path.join(overrides.dir, "work");
+  config.engine.maxParallel = 1; // v0.3 串行
   config.engine.web.enabled = true;
   config.engine.web.port = overrides.webPort ?? 0;
   if (overrides.providers) config.providers = overrides.providers;
@@ -54,18 +154,22 @@ export function makeConfig(overrides: {
           end: "15:00",
           initialRemaining: 80,
           burnPerRun: 6,
+          apiKey: "mock-key",
+          dsh: MOCK_DSH,
         },
       },
     ];
   }
-  // 只保留与当前 providers 匹配的 model catalog，否则配置校验会失败
-  config.models = config.models.filter((m) =>
-    config.providers.some((p) => p.name === m.provider),
-  );
+  // 能力目录已废弃（模型归 provider 配置）
+  config.models = [];
   Object.assign(config.policy, overrides.policy ?? {});
-  config.runners.default = "shell";
-  config.runners.shell.enabled = true;
-  config.runners.dsh.enabled = false;
+  config.runners.default = "dsh";
+  config.runners.dsh.enabled = true;
+  config.runners.dsh.command = overrides.fakeDsh ?? writeFakeDsh(overrides.dir);
+  config.runners.dsh.profile = "lcs-test";
+  config.runners.dsh.patchDir = path.join(overrides.dir, "patches");
+  config.runners.dsh.timeoutS = 30;
+  config.runners.dsh.maxParallel = 1;
   return config;
 }
 
@@ -81,7 +185,7 @@ export function makeTask(overrides: Partial<Task> & { cmd?: string[] } = {}): Ta
     idempotencyKey: uid("idem"),
     taskClass: "default",
     spec: {
-      cmd: overrides.cmd ?? ["node", "-e", "1"],
+      cmd: overrides.cmd ?? ["fake-task"],
       expectedDurationS: 1,
       timeoutS: 30,
       ...overrides.spec,
@@ -117,8 +221,7 @@ export async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** 推进假时钟并 tick，直到没有在飞 run、也没有新的 spawn。 */
-/** 反复 tick 直到任务进入终态（测试里没有自动调度循环，需要手动推进）。 */
+/** 推进假时钟并 tick，直到任务进入终态（测试里没有自动调度循环，需要手动推进）。 */
 export async function waitForTask(
   engine: Engine,
   clock: FakeClock,

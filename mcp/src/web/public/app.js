@@ -2,6 +2,7 @@
 
 const state = {
   status: null,
+  vendors: null,
   tasks: [],
   config: null,
   samples: [],
@@ -503,15 +504,31 @@ function renderConfigForm() {
     .map((provider, index) => {
       const base = `providers.${index}`;
       let extra = "";
+      const dsh = provider.options && provider.options.dsh;
+      if (dsh) {
+        // 厂商参数只读（预设写死），只有「用哪个模型」可选
+        const models = Array.isArray(dsh.models) ? dsh.models : [];
+        const options = models
+          .map((m) => `<option value="${esc(m)}"${m === dsh.defaultModel ? " selected" : ""}>${esc(m)}</option>`)
+          .join("");
+        extra += `
+          <div class="span3 readonly-route">
+            <span>dsh 路由 <b class="mono">${esc(dsh.route ?? "-")}</b></span>
+            <span>协议 <b class="mono">${esc(dsh.api ?? "-")}</b></span>
+            <span>端点 <b class="mono">${esc(dsh.baseURL ?? "-")}</b></span>
+            <span>Key 变量 <b class="mono">${esc(dsh.apiKeyEnv ?? "-")}</b></span>
+          </div>
+          ${cfgSelect(`${base}.options.dsh.defaultModel`, "使用模型", models.map((m) => [m, m]))}`;
+      }
       if (provider.kind === "minimax") {
-        extra = `
+        extra += `
           ${cfgPath(`${base}.options.apiKey`, "API Key", "password", { placeholder: "*** 或留空使用 env/file" })}
           ${cfgPath(`${base}.options.apiKeyEnv`, "API Key 环境变量")}
           ${cfgPath(`${base}.options.apiKeyFile`, "API Key 文件")}
           ${cfgPath(`${base}.options.families`, "families（逗号分隔）")}
           ${cfgPath(`${base}.options.textTokensPerPct`, "每 1% ≈ token 数", "number")}`;
       } else if (provider.kind === "payg") {
-        extra = `
+        extra += `
           ${cfgPath(`${base}.options.stateFile`, "余额状态文件")}
           ${cfgPath(`${base}.options.unitPricePer1kTokens`, "单价 / 1k token", "number", { step: "0.0001" })}`;
       }
@@ -536,6 +553,8 @@ function renderConfigForm() {
     ${cfgPath("engine.web.port", "Web 端口（改动需重启）", "number")}
     ${cfgPath("engine.stateFile", "状态文件", "text", { span: "span2" })}
     ${cfgPath("engine.artifactsDir", "产物目录")}
+    ${cfgPath("engine.workDir", "任务工作目录根", "text", { span: "span2" })}
+    ${cfgPath("engine.sessionRetentionDays", "会话保留天数", "number")}
 
     <div class="span3" style="border-top:1px solid var(--border);padding-top:10px;margin-top:4px"><h2>策略</h2></div>
     ${cfgPath("policy.burnLeadMinutes", "尾段阈值（分钟）", "number")}
@@ -552,11 +571,16 @@ function renderConfigForm() {
     ${cfgCheck("policy.workHoursOpportunistic", "工作时段也允许机会式开烧（谨慎）")}
 
     <div class="span3" style="border-top:1px solid var(--border);padding-top:10px;margin-top:4px"><h2>执行器</h2></div>
-    ${cfgSelect("runners.default", "默认执行器", [["shell", "shell"], ["dsh", "dsh headless"]])}
-    ${cfgCheck("runners.shell.enabled", "启用 shell")}
-    ${cfgCheck("runners.dsh.enabled", "启用 dsh headless")}
+    <div class="span3 readonly-route">
+      <span>执行器 <b class="mono">dsh</b>（唯一）</span>
+      <span>并发 <b class="mono">1</b>（串行：一个完成再下一个）</span>
+      <span>会话 <b class="mono">~/.dsh</b>（与 dsh web 共用库，界面不可见）</span>
+    </div>
+    ${cfgCheck("runners.dsh.enabled", "启用 dsh 执行器")}
     ${cfgPath("runners.dsh.command", "dsh 命令")}
-    ${cfgPath("runners.dsh.profile", "dsh profile")}
+    ${cfgPath("runners.dsh.profile", "dsh profile（LCS 自建）")}
+    ${cfgPath("runners.dsh.patchDir", "运行期 patch 目录")}
+    ${cfgPath("runners.dsh.timeoutS", "默认超时（秒）", "number")}
 
     <div class="span3 prov-head">
       <h2>Provider</h2>
@@ -657,10 +681,38 @@ function activateProviderTab(index) {
     .forEach((el) => el.classList.toggle("active", Number(el.dataset.ppane) === index));
 }
 
-function openProviderModal() {
+async function loadVendors() {
+  if (state.vendors) return state.vendors;
+  try {
+    state.vendors = await api("/api/providers/vendors");
+  } catch (error) {
+    fail(error);
+    state.vendors = [];
+  }
+  return state.vendors;
+}
+
+function fillModelOptions() {
+  const vendor = (state.vendors || []).find((item) => item.id === $("p-vendor").value);
+  const models = (vendor && vendor.models) || [];
+  $("p-model").innerHTML = models
+    .map((m) => `<option value="${esc(m)}">${esc(m)}</option>`)
+    .join("");
+  if (vendor && vendor.defaultModel && models.includes(vendor.defaultModel)) {
+    $("p-model").value = vendor.defaultModel;
+  }
+}
+
+async function openProviderModal() {
   $("p-name").value = "";
   $("p-apikey").value = "";
   $("p-vendor").selectedIndex = 0;
+  await loadVendors();
+  const vendors = state.vendors || [];
+  $("p-vendor").innerHTML = vendors
+    .map((v) => `<option value="${esc(v.id)}">${esc(v.label)}</option>`)
+    .join("");
+  fillModelOptions();
   $("provider-modal").classList.remove("hidden");
   $("p-apikey").focus();
 }
@@ -673,6 +725,7 @@ async function saveProvider() {
   const vendor = $("p-vendor").value;
   const apiKey = $("p-apikey").value.trim();
   const name = $("p-name").value.trim();
+  const model = $("p-model").value || undefined;
   if (!apiKey) {
     toast("请填写 API Key", true);
     $("p-apikey").focus();
@@ -682,7 +735,7 @@ async function saveProvider() {
   try {
     const result = await api("/api/providers", {
       method: "POST",
-      body: JSON.stringify({ vendor, apiKey, name: name || undefined }),
+      body: JSON.stringify({ vendor, apiKey, name: name || undefined, model }),
     });
     state.config = result.config;
     renderConfigForm();
@@ -820,6 +873,7 @@ function bindEvents() {
   $("provider-modal").addEventListener("click", (event) => {
     if (event.target === $("provider-modal")) closeProviderModal();
   });
+  $("p-vendor").addEventListener("change", () => fillModelOptions());
   $("p-apikey").addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();

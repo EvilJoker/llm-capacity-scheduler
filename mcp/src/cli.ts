@@ -18,6 +18,7 @@ import {
 import { Engine } from "./engine.js";
 import { HttpBackend, LocalBackend } from "./backend.js";
 import { createMcpServer, serveMcpStdio, VERSION } from "./mcp.js";
+import { ensureDshProfile } from "./dsh-profile.js";
 import { addProvider, removeProvider, type AddProviderInput } from "./provider-presets.js";
 import { Store } from "./store.js";
 import { deepMerge, log, logError } from "./util.js";
@@ -175,6 +176,17 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   let config: Config = loaded.config;
   const baseDir = loaded.baseDir;
 
+  // 迁移落盘：配置文件是 v1 时，启动即升级为 v2（否则每次都要迁移一遍）
+  try {
+    const raw = JSON.parse(fs.readFileSync(loaded.path, "utf8")) as Record<string, unknown>;
+    if (Number(raw.version ?? 1) < 2) {
+      saveConfig(config, loaded.path);
+      log(`配置已迁移到 v2（dsh-only / 串行）：${loaded.path}`);
+    }
+  } catch {
+    /* 读不到就跳过（下次保存时自然会写新格式） */
+  }
+
   // 已有守护进程在跑：MCP 模式自动降级为 HTTP 代理（Web 常开 + agent 接入共存）
   const holder = lockHolder(config.engine.stateFile);
   if (holder && options.mcp && !options.force) {
@@ -206,6 +218,14 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     return;
   }
 
+  // 自举 dsh profile：LCS 自建 ~/.dsh/profiles/<profile>，静态声明各 provider 的路由
+  try {
+    const profile = ensureDshProfile(config, config.runners.dsh.profile);
+    log(`dsh profile: ${profile.dir}${profile.changed ? "（已更新路由声明）" : ""}`);
+  } catch (error) {
+    logError("dsh profile 自举失败（执行任务会失败）", error);
+  }
+
   const releaseLock = acquireLock(config.engine.stateFile, options.force);
   const store = Store.open(config.engine.stateFile);
   const engine = new Engine({ config, baseDir, store });
@@ -229,6 +249,11 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     saveConfig(next, loaded.path);
     config = next;
     engine.reload(next, baseDir);
+    try {
+      ensureDshProfile(config, config.runners.dsh.profile);
+    } catch (error) {
+      logError("dsh profile 更新失败", error);
+    }
     log("配置已保存并热加载");
     return next;
   };
@@ -242,6 +267,11 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     saveConfig(finalized, loaded.path);
     config = finalized;
     engine.reload(finalized, baseDir);
+    try {
+      ensureDshProfile(finalized, finalized.runners.dsh.profile);
+    } catch (error) {
+      logError("dsh profile 更新失败", error);
+    }
     const buckets = await engine.observeNow();
     const mine = buckets.filter((bucket) => bucket.provider === provider.name);
     log(`已添加 provider ${provider.name}（已观测 ${mine.length} 个桶）`);

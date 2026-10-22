@@ -121,7 +121,7 @@ test("Mock：余量随成功 run 数下降", async () => {
     assignmentId: "a1",
     provider: "mock",
     model: "general",
-    runner: "shell" as const,
+    runner: "dsh" as const,
     bucketKey: "mock/general/text_tokens/fixed_grid:-:-:-",
     est: 6,
     pid: null,
