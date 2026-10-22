@@ -384,25 +384,72 @@ async function renderTaskDetail(taskId) {
               <td><span class="badge ${run.status === "succeeded" ? "green" : run.status === "running" ? "warn" : "red"}">${esc(run.status)}</span></td>
               <td class="mono">${esc(run.provider)} / ${esc(run.model)}</td>
               <td class="mono">est ${Number(run.est).toFixed(2)}${run.quotaDelta !== null ? ` · Δ${Number(run.quotaDelta).toFixed(1)}` : ""}</td>
-              <td class="mono">${fmtTime(run.started_at)} → ${fmtTime(run.ended_at)}</td>
+              <td class="mono">${fmtTime(run.startedAt)} → ${fmtTime(run.endedAt)}</td>
+              <td class="mono">${run.sessionId ? esc(String(run.sessionId).slice(0, 18)) + "…" : "-"}${formatUsage(run.usage)}</td>
               <td class="artifacts">${artifacts || '<span class="hint">无产物</span>'}</td>
               <td class="mono">${run.error ? esc(run.error) : ""}</td>
+              <td><button class="btn ghost" data-runlog="${esc(run.id)}">日志</button></td>
             </tr>`;
           })
           .join("")
-      : `<tr><td colspan="7" class="empty">还没有执行记录（可能仍在等待时机）</td></tr>`;
+      : `<tr><td colspan="9" class="empty">还没有执行记录（可能仍在等待时机）</td></tr>`;
     $("task-detail").innerHTML = `
       <div class="run-box">
         <div class="panel-head"><h2>任务详情 ${esc(task.id)}</h2>
           <span class="hint">${STATE_LABEL[task.state] || task.state} · 尝试 ${task.attempts} · 价值 ${task.value}${task.error ? " · 错误: " + esc(task.error) : ""}</span>
         </div>
         <table>
-          <thead><tr><th>run</th><th>状态</th><th>provider / model</th><th>est / Δ</th><th>时间</th><th>产物</th><th>错误</th></tr></thead>
+          <thead><tr><th>run</th><th>状态</th><th>provider / model</th><th>est / Δ</th><th>时间</th><th>session / usage</th><th>产物</th><th>错误</th><th>日志</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
+        <div id="run-log-box" class="run-log hidden">
+          <div class="panel-head"><h2>执行日志</h2>
+            <span class="hint" id="run-log-hint"></span>
+            <button class="btn ghost" id="btn-runlog-refresh">刷新</button>
+            <button class="btn ghost" id="btn-runlog-close">关闭</button>
+          </div>
+          <pre id="run-log-text" class="log"></pre>
+        </div>
       </div>`;
+
+    // 日志按钮：加载执行过程的原始 stdout（dsh NDJSON 事件流）
+    document.querySelectorAll("[data-runlog]").forEach((el) => {
+      el.addEventListener("click", () => void loadRunLog(el.dataset.runlog));
+    });
   } catch (error) {
     fail(error);
+  }
+}
+
+/** 把 usage 概括成一行（tokens 计量是 dsh 的权威用量）。 */
+function formatUsage(usage) {
+  if (!usage || typeof usage !== "object") return "";
+  const total = usage.totalTokens ?? usage.total_tokens;
+  const input = usage.inputTokens ?? usage.input_tokens;
+  const output = usage.outputTokens ?? usage.output_tokens;
+  if (total === undefined && input === undefined) return "";
+  const parts = [];
+  if (input !== undefined) parts.push(`in ${input}`);
+  if (output !== undefined) parts.push(`out ${output}`);
+  const head = total !== undefined ? `Σ${total}` : parts.join(" ");
+  return `<br><span class="hint">${esc(head)}${parts.length && total !== undefined ? " · " + esc(parts.join(" ")) : ""}</span>`;
+}
+
+/** 加载某个 run 的执行日志（stdout 尾部）。 */
+async function loadRunLog(runId) {
+  state.selectedRunId = runId;
+  const box = $("run-log-box");
+  const pre = $("run-log-text");
+  if (!box || !pre) return;
+  box.classList.remove("hidden");
+  try {
+    const data = await api(`/api/runs/${encodeURIComponent(runId)}/log`);
+    $("run-log-hint").textContent = `${data.status} · ${data.size} 字节${data.size > data.text.length ? "（只显示尾部）" : ""}`;
+    pre.textContent = data.text || "（还没有输出）";
+    pre.scrollTop = pre.scrollHeight;
+    state.runLogDone = data.status !== "running";
+  } catch (error) {
+    pre.textContent = `加载失败：${error.message}`;
   }
 }
 
@@ -840,6 +887,17 @@ function bindEvents() {
       fail(error);
     } finally {
       $("btn-tick").disabled = false;
+    }
+  });
+
+  document.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.id === "btn-runlog-close") {
+      $("run-log-box")?.classList.add("hidden");
+    }
+    if (target.id === "btn-runlog-refresh" && state.selectedRunId) {
+      void loadRunLog(state.selectedRunId);
     }
   });
 

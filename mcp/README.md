@@ -139,7 +139,7 @@ Task ──(Queue 派生视图)──▶ Controller ──(Assignment)──▶ 
 | 概览 | 容量桶卡片（余量/窗口倒计时/reserve 线）、队列/在飞、最近决策原因、手动 tick / 暂停 |
 | 任务 | 提交表单（shell / dsh headless）、任务表、执行记录、产物在线查看、取消 |
 | 容量 | 桶明细 + 观测记录（每轮调度自动落一条，页面自动刷新），解释「现在为什么不烧」；「刷新容量」手动向 provider 拉一次 |
-| 任务 | 执行器固定 dsh；产物 `final.md` 来自 dsh 的 `final` 事件；run 详情含 sessionId 与 usage tokens |
+| 任务 | 执行器固定 dsh；产物 `final.md` 来自 dsh 的 `final` 事件；run 详情含 sessionId、usage tokens 与「日志」按钮（原始 NDJSON 事件流尾部，失败时定位原因） |
 | 配置 | 表单 + 原始 JSON 双模式，保存即热加载；Provider 用选项卡管理，「＋ 添加 LLM」按厂商预设接入（当前支持 MiniMax）、「删除」移除该 Key；API Key 脱敏 |
 
 ```bash

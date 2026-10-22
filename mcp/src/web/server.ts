@@ -332,6 +332,33 @@ async function handleRequest(
     );
   }
 
+  // ---------------------------------------------------------------- run log
+  // 执行过程的原始 stdout（dsh 的 NDJSON 事件流）：任务失败时用它定位原因。
+  // tail=N 只取末尾 N 字节（默认 20KB），避免大日志把浏览器打爆。
+  const runLogMatch = /^\/api\/runs\/([^/]+)\/log$/.exec(pathname);
+  if (runLogMatch && method === "GET") {
+    const run = engine.store.getRun(decodeURIComponent(runLogMatch[1]));
+    if (!run) return sendJson(res, 404, { error: "run not found" });
+    const tail = Math.max(1024, Math.min(1_000_000, Number(url.searchParams.get("tail") ?? "20000")));
+    let text = "";
+    let size = 0;
+    try {
+      const raw = fs.readFileSync(run.logPath, "utf8");
+      size = Buffer.byteLength(raw, "utf8");
+      text = raw.length > tail ? raw.slice(-tail) : raw;
+    } catch {
+      text = "";
+    }
+    return sendJson(res, 200, {
+      runId: run.id,
+      taskId: run.taskId,
+      status: run.status,
+      logPath: run.logPath,
+      size,
+      text,
+    });
+  }
+
   // ---------------------------------------------------------------- gc
   // 清理审计：POST /api/gc { dryRun?: true } —— 预览/执行一次 GC，返回逐 task 明细。
   // 只处理 LCS 自己登记过的会话与产物，路径限定在 engine.dshHome 内。

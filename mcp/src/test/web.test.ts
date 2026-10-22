@@ -343,3 +343,37 @@ test("清理审计：POST /api/gc 预览不删、状态里能看到审计与作�
     await ctx.web.close();
   }
 });
+
+test("执行日志：GET /api/runs/:id/log 返回 dsh 事件流尾部", async () => {
+  const ctx = await setup();
+  try {
+    const submit = await ctx.api("/api/tasks", {
+      method: "POST",
+      body: JSON.stringify({
+        cmd: [NODE, "-e", "require('fs').writeFileSync('out.txt','log-test')"],
+        value: 42,
+        expect_artifacts: ["out.txt"],
+      }),
+    });
+    const taskId = submit.data.task_id as string;
+    await ctx.api("/api/tick", { method: "POST" });
+    const state = await waitForTask(ctx.engine, ctx.clock, taskId);
+    assert.equal(state, "succeeded");
+
+    const task = await ctx.api(`/api/tasks/${taskId}`);
+    const runId = task.data.runs[0].id as string;
+
+    const log = await ctx.api(`/api/runs/${encodeURIComponent(runId)}/log`);
+    assert.equal(log.status, 200);
+    assert.equal(log.data.runId, runId);
+    assert.equal(log.data.status, "succeeded");
+    assert.ok(log.data.size > 0, "应该有 stdout");
+    assert.match(log.data.text, /"type":"final"/);
+
+    // 不存在的 run → 404
+    const missing = await ctx.api("/api/runs/run_nope/log");
+    assert.equal(missing.status, 404);
+  } finally {
+    await ctx.web.close();
+  }
+});
