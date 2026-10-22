@@ -7,10 +7,13 @@
 import fs from "node:fs";
 import path from "node:path";
 
-export function resolveProviderKey(options: Record<string, unknown>): string | null {
+export function resolveProviderKey(
+  options: Record<string, unknown>,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
   const envName = typeof options.apiKeyEnv === "string" ? options.apiKeyEnv.trim() : "";
   if (envName) {
-    const fromEnv = process.env[envName];
+    const fromEnv = env[envName];
     if (fromEnv && fromEnv.trim()) return fromEnv.trim();
   }
   const direct = typeof options.apiKey === "string" ? options.apiKey.trim() : "";

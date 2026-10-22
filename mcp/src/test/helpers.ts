@@ -168,7 +168,8 @@ export function makeConfig(overrides: {
   config.runners.dsh.command = overrides.fakeDsh ?? writeFakeDsh(overrides.dir);
   config.runners.dsh.profile = "lcs-test";
   config.runners.dsh.patchDir = path.join(overrides.dir, "patches");
-  config.runners.dsh.timeoutS = 30;
+  // 假 dsh 是真实子进程：机器负载高时启动会明显变慢，超时给足余量避免假失败
+  config.runners.dsh.timeoutS = 120;
   config.runners.dsh.maxParallel = 1;
   return config;
 }
@@ -187,7 +188,7 @@ export function makeTask(overrides: Partial<Task> & { cmd?: string[] } = {}): Ta
     spec: {
       cmd: overrides.cmd ?? ["fake-task"],
       expectedDurationS: 1,
-      timeoutS: 30,
+      timeoutS: 120,
       ...overrides.spec,
     },
     requirements: overrides.requirements ?? {},

@@ -18,6 +18,7 @@ import {
 import { Engine } from "./engine.js";
 import { HttpBackend, LocalBackend } from "./backend.js";
 import { createMcpServer, serveMcpStdio, VERSION } from "./mcp.js";
+import { formatDoctor, runDoctor } from "./doctor.js";
 import { ensureDshProfile } from "./dsh-profile.js";
 import { addProvider, removeProvider, type AddProviderInput } from "./provider-presets.js";
 import { Store } from "./store.js";
@@ -25,7 +26,7 @@ import { deepMerge, log, logError } from "./util.js";
 import { startWebServer, type RunningWebServer, type WebDeps } from "./web/server.js";
 
 interface CliOptions {
-  command: "mcp" | "serve" | "init";
+  command: "mcp" | "serve" | "init" | "doctor";
   config?: string;
   web: boolean;
   mcp: boolean;
@@ -57,18 +58,19 @@ function parseCli(argv: string[]): CliOptions {
     process.exit(0);
   }
   const command = (positionals[0] ?? "mcp") as CliOptions["command"];
-  if (!["mcp", "serve", "init"].includes(command)) {
+  if (!["mcp", "serve", "init", "doctor"].includes(command)) {
     console.error(`未知命令: ${command}`);
     printHelp();
     process.exit(2);
   }
   if (values.port) process.env.LCS_PORT = values.port;
+  const isOneShot = command === "init" || command === "doctor";
   return {
     command,
     config: values.config,
-    web: !values["no-web"] && command !== "init",
+    web: !values["no-web"] && !isOneShot,
     mcp: !values["no-mcp"] && command === "mcp",
-    scheduler: !values["no-scheduler"] && command !== "init",
+    scheduler: !values["no-scheduler"] && !isOneShot,
     force: Boolean(values.force),
   };
 }
@@ -80,6 +82,7 @@ function printHelp(): void {
   lcs-mcp [--config <path>]            启动：MCP stdio + 调度器 + Web（agent 接入用）
   lcs-mcp serve [--config <path>]      常驻守护：调度器 + Web（不接 MCP 客户端）
   lcs-mcp init [--config <path>]       生成默认配置文件
+  lcs-mcp doctor [--config <path>]     安装自检：还差什么（dsh/配置/凭据/守护进程/插件接线）
 
 选项:
   -c, --config <path>   配置文件路径（默认 ~/.lcs/config.json，或 $LCS_CONFIG）
@@ -155,6 +158,14 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const configPath = options.config
     ? path.resolve(options.config)
     : defaultConfigPath();
+
+  if (options.command === "doctor") {
+    const checks = await runDoctor({ configPath });
+    const report = formatDoctor(checks);
+    process.stdout.write(`${report.text}\n`);
+    if (report.failed) process.exitCode = 1;
+    return;
+  }
 
   if (options.command === "init") {
     if (fs.existsSync(configPath) && !options.force) {

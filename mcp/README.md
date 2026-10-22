@@ -1,14 +1,22 @@
 # llm-capacity-scheduler-mcp
 
-> **容量感知的异步任务调度器 —— MCP Server + Web 控制台。**
+> **容量感知的异步任务调度器 —— 独立常驻服务 + dsh 执行器 + 客户端工具面。**
 > 把会过期的 LLM 配额，变成有价值的产出。
 
 订阅制 LLM 的容量有几种截然不同的性质：5h 窗口用不完就作废、周限额可能无限、
 付费余额烧了要花钱、还有 rate limit / 峰时降速。人盯着仪表盘手动跑任务迟早会漏；
 这个服务把「**什么时候、用谁、用多强**」变成自动决策，agent 只负责 `submit` 和 `poll`。
 
-- **一个 npm 进程**：MCP stdio + 调度器 + Web 控制台。
-- **agent 接入**：在 MCP 客户端（DSH / Claude Desktop 等）配一条 stdio server 即可。
+### 三种角色
+
+| 角色 | 是什么 | 谁来跑 |
+|---|---|---|
+| **调度服务（7×24）** | 调度器 + 容量观测 + 计量 + Web 控制台，状态在 `~/.lcs/state.json` | 独立常驻进程（`lcs-mcp serve`），怎么托管由你定 |
+| **执行器** | dsh headless（`dsh --profile lcs`），每个 task 一个 session + 固定工作目录 | 调度服务拉起的子进程 |
+| **客户端** | MCP Server（stdio）/ **dsh 插件**（原生 `lcs_*` 工具） | agent 侧，按需连调度服务 |
+
+- **agent 接入**：dsh 里 `dsh plugin --profile web add llm-capacity-scheduler-mcp` 装个插件，
+  就有原生 `lcs_*` 工具；或者任何 MCP 客户端配一条 stdio server。
 - **人用**：浏览器打开 `http://127.0.0.1:7788` 改配置、看容量、提交任务、追产物。
 - **零原生依赖**：状态是单文件 JSON（原子写），`npm i` 不需要编译工具链。
 
@@ -29,13 +37,31 @@ npx llm-capacity-scheduler-mcp --help
 ```bash
 lcs-mcp init                          # 生成 ~/.lcs/config.json（已存在则不覆盖）
 lcs-mcp serve                         # 常驻：调度器 + Web 控制台（http://127.0.0.1:7788）
+lcs-mcp doctor                        # 安装自检：dsh / 配置 / 凭据 / 执行器 profile / 守护进程 / 插件接线
 ```
+
+> 调度服务建议**常驻**（7×24）：它是唯一写状态、唯一跑调度、唯一起 dsh 子进程的进程。
+> 客户端（MCP / dsh 插件）都是它的薄客户端，挂了不影响调度，重连即可。
 
 起服务后，不用手改配置也能接 provider：**配置 → Provider → 「＋ 添加 LLM」**，选厂商
 （当前支持 MiniMax）、填 API Key、保存。保存后会立刻向 provider 拉一次容量，切到「容量」页即可
 看到新桶；同一厂商可以加多个 Key（自动命名 `minimax` / `minimax-2`）。
 
 只想临时用（不常驻）也可以直接 `lcs-mcp`：它同时起调度器 + Web + MCP stdio。
+
+### 接入 DSH（推荐：装插件）
+
+```bash
+dsh plugin --profile web add llm-capacity-scheduler-mcp
+```
+
+一条命令装完：pnpm 把包放进 profile，`dsh.profile.bundles` 自动登记，重启 dsh 后
+agent 里就有 7 个原生工具（`lcs_submit_task` / `lcs_poll_tasks` / …）。
+
+插件是**纯客户端**：不抢锁、不监听端口、不起调度器，只把工具调用转发给调度服务。
+所以它和常驻服务可以并存，也可以单独用（服务没起时工具返回明确的错误提示）。
+
+> 装完跑一次 `lcs-mcp doctor`，它会告诉你插件装到哪个 profile、调度服务在不在跑。
 
 ### 接入 MCP 客户端
 
@@ -139,9 +165,10 @@ lcs-mcp serve --no-web             # 只跑调度器
 
 ```jsonc
 {
-  "version": 1,
+  "version": 2,
   "engine": { "tickSeconds": 60, "stateFile": "~/.lcs/state.json",
-              "artifactsDir": "~/.lcs/artifacts", "maxParallel": 4,
+              "artifactsDir": "~/.lcs/artifacts", "maxParallel": 1,
+              "workDir": "~/.lcs/work", "sessionRetentionDays": 7,
               "web": { "enabled": true, "host": "127.0.0.1", "port": 7788 } },
   "policy": {
     "burnLeadMinutes": 30, "minReservePct": 5, "safetyFactor": 1.5,
@@ -151,19 +178,29 @@ lcs-mcp serve --no-web             # 只跑调度器
   },
   "providers": [
     { "name": "minimax", "kind": "minimax", "enabled": true,
-      "options": { "apiKeyEnv": "MINIMAX_API_KEY", "apiKeyFile": "~/.mmx/config.json",
-                   "families": ["general"], "textTokensPerPct": 50000 } }
+      "options": {
+        "apiKeyEnv": "LCS_MINIMAX_API_KEY",
+        "families": ["general"], "textTokensPerPct": 50000,
+        // dsh 路由段：厂商预设写入（只读），决定 dsh 侧怎么连这个厂商
+        "dsh": { "route": "minimax", "api": "anthropic-messages",
+                 "baseURL": "https://api.minimaxi.com/anthropic",
+                 "apiKeyEnv": "LCS_MINIMAX_API_KEY",
+                 "models": ["MiniMax-M3.1-Flash[1m]"],
+                 "defaultModel": "MiniMax-M3.1-Flash[1m]" } } }
   ],
-  "runners": { "default": "shell",
-               "shell": { "enabled": true },
-               "dsh": { "enabled": true, "command": "dsh", "profile": "headless" } }
+  "runners": { "default": "dsh",
+               "dsh": { "enabled": true, "command": "dsh", "profile": "lcs",
+                        "patchDir": "~/.lcs/patches", "timeoutS": 1800, "maxParallel": 1 } }
 }
 ```
 
 - **provider.kind**：`minimax`（fixed_grid 5h + 周 unlimited）/ `payg`（depleting 余额）/
   `mock`（本地演示与测试）。
-- **runner**：`shell`（本机命令，产物落 `artifacts/<taskId>/<runId>/`）/
-  `dsh`（`dsh --profile headless --json "<task>"`，checkpoint = `--session-id`，可续跑）。
+- **runner**：v0.3 起**只有 `dsh`**（`dsh --profile lcs --patch <run.patch.yml> --json "<task>"`）。
+  模型由 provider 的 `options.dsh.defaultModel` 决定，运行期 patch 只切模型、不动路由；
+  checkpoint = `--session-id`，同 task 续跑复用 session 与工作目录。
+- **执行器 profile**：LCS 自建 `~/.dsh/profiles/lcs`（bundles = base + headless），
+  路由声明写在它的 patch 层；**API Key 只走环境变量注入**，不进 patch、不进命令行。
 - **route 注入**：任务进程会拿到 `LCS_PROVIDER` / `LCS_MODEL` / `LCS_ASSIGNMENT_ID`，
   保证「控制器以为的桶」和「真实消耗的桶」一致。
 
@@ -173,6 +210,7 @@ lcs-mcp serve --no-web             # 只跑调度器
 lcs-mcp [--config <path>]         MCP stdio + 调度器 + Web
 lcs-mcp serve                     常驻：调度器 + Web
 lcs-mcp init                      生成默认配置
+lcs-mcp doctor                    安装自检（还差什么）
       --port <n>                  覆盖 Web 端口
       --no-web / --no-mcp / --no-scheduler
       --force                     忽略单实例锁
@@ -183,7 +221,7 @@ lcs-mcp init                      生成默认配置
 ```bash
 npm install
 npm run build
-npm test                          # node:test，49 个用例（含端到端烧窗口 / Web API / MCP 闭环 / 迁移 / GC）
+npm test                          # node:test，55 个用例（端到端烧窗口 / Web API / MCP 闭环 / 插件 / 迁移 / GC）
 npm run dev -- serve              # tsx 直跑
 ```
 

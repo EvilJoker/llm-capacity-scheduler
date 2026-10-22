@@ -246,9 +246,9 @@ export function migrateConfig(raw: Record<string, unknown>): Record<string, unkn
   return out;
 }
 
-export function defaultConfigPath(): string {
-  const env = process.env.LCS_CONFIG;
-  if (env) return resolvePath(env, process.cwd());
+export function defaultConfigPath(env: NodeJS.ProcessEnv = process.env): string {
+  const explicit = env.LCS_CONFIG;
+  if (explicit) return resolvePath(explicit, process.cwd());
   const local = path.resolve(process.cwd(), "lcs.config.json");
   if (fs.existsSync(local)) return local;
   return path.join(os.homedir(), ".lcs", "config.json");

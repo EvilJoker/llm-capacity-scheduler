@@ -1,7 +1,7 @@
 {
   "name": "llm-capacity-scheduler-mcp",
-  "version": "0.2.0",
-  "description": "容量感知异步任务调度器（MCP Server + Web 控制台）：把会过期的 LLM 配额变成有价值的产出",
+  "version": "0.3.0",
+  "description": "容量感知异步任务调度器（MCP Server + Web 控制台 + dsh 插件）：把会过期的 LLM 配额变成有价值的产出",
   "type": "module",
   "license": "MIT",
   "bin": {
@@ -9,11 +9,13 @@
   },
   "main": "dist/index.js",
   "exports": {
-    ".": "./dist/index.js"
+    ".": "./dist/index.js",
+    "./plugin": "./dist/plugin/index.js"
   },
   "files": [
     "dist",
     "bin",
+    "cordis.patch.yml",
     "README.md"
   ],
   "engines": {
@@ -21,12 +23,27 @@
   },
   "keywords": [
     "mcp",
+    "dsh",
+    "dsh-plugin",
     "llm",
     "scheduler",
     "quota",
     "minimax",
     "capacity"
   ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": ">=0.2.0-rc.2 <0.3.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
     "dev": "tsx src/cli.ts",
@@ -39,8 +56,9 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-tools": "^0.2.0-rc.2",
     "@types/node": "^24.0.0",
-    "tsx": "^4.20.0",
+    "tsx": "^4.20.10",
     "typescript": "^5.9.0"
   }
 }

@@ -1,0 +1,12 @@
+# LCS dsh 插件（bundle）的 patch 层。
+#
+# dsh 的层序：各 bundle 的 patch → profile 的 cordis.patch.yml → ~/.dsh/cordis.patch.yml → --patch。
+# 本文件是**插件自带**的层，作用是把 LCS 插件挂进 dsh 的加载树。
+#
+# 说明：
+# - row id 必须全局唯一（与其它 bundle 冲突会导致下次启动直接失败），故用 lcs-client。
+# - name 用包内相对路径：dsh 会把它转成 file URL 后 import。
+# - 插件是纯客户端：不抢锁、不监听端口、不起调度器；调用转发给独立常驻的 LCS 守护进程。
+- insert:
+    - id: lcs-client
+      name: './dist/plugin/index.js'
