@@ -3,7 +3,9 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { parseArgs } from "node:util";
+import { fileURLToPath } from "node:url";
 
 import {
   defaultConfigPath,
@@ -26,14 +28,43 @@ import { deepMerge, log, logError } from "./util.js";
 import { startWebServer, type RunningWebServer, type WebDeps } from "./web/server.js";
 
 interface CliOptions {
-  command: "mcp" | "serve" | "init" | "doctor" | "gc";
+  command: Command;
   dryRun: boolean;
   config?: string;
   web: boolean;
   mcp: boolean;
   scheduler: boolean;
   force: boolean;
+  follow: boolean;
+  tail: number;
 }
+
+const COMMANDS = [
+  "mcp",
+  "serve",
+  "init",
+  "doctor",
+  "gc",
+  "start",
+  "stop",
+  "restart",
+  "status",
+  "logs",
+] as const;
+
+type Command = (typeof COMMANDS)[number];
+
+/** 一次性命令：不启动调度器 / Web / MCP。 */
+const ONE_SHOT: ReadonlySet<Command> = new Set([
+  "init",
+  "doctor",
+  "gc",
+  "start",
+  "stop",
+  "restart",
+  "status",
+  "logs",
+] as const);
 
 function parseCli(argv: string[]): CliOptions {
   const { values, positionals } = parseArgs({
@@ -46,6 +77,8 @@ function parseCli(argv: string[]): CliOptions {
       "no-scheduler": { type: "boolean" },
       force: { type: "boolean" },
       "dry-run": { type: "boolean" },
+      follow: { type: "boolean", short: "f" },
+      tail: { type: "string" },
       help: { type: "boolean", short: "h" },
       version: { type: "boolean", short: "v" },
       port: { type: "string" },
@@ -59,14 +92,15 @@ function parseCli(argv: string[]): CliOptions {
     console.log(VERSION);
     process.exit(0);
   }
-  const command = (positionals[0] ?? "mcp") as CliOptions["command"];
-  if (!["mcp", "serve", "init", "doctor", "gc"].includes(command)) {
+  const command = (positionals[0] ?? "mcp") as Command;
+  if (!COMMANDS.includes(command)) {
     console.error(`未知命令: ${command}`);
     printHelp();
     process.exit(2);
   }
   if (values.port) process.env.LCS_PORT = values.port;
-  const isOneShot = command === "init" || command === "doctor" || command === "gc";
+  const isOneShot = ONE_SHOT.has(command);
+  const tail = Number(values.tail ?? "100");
   return {
     command,
     dryRun: Boolean(values["dry-run"]),
@@ -75,6 +109,8 @@ function parseCli(argv: string[]): CliOptions {
     mcp: !values["no-mcp"] && command === "mcp",
     scheduler: !values["no-scheduler"] && !isOneShot,
     force: Boolean(values.force),
+    follow: Boolean(values.follow),
+    tail: Number.isFinite(tail) && tail > 0 ? Math.floor(tail) : 100,
   };
 }
 
@@ -83,8 +119,13 @@ function printHelp(): void {
 
 用法:
   lcs-mcp [--config <path>]            启动：MCP stdio + 调度器 + Web（agent 接入用）
-  lcs-mcp serve [--config <path>]      常驻守护：调度器 + Web（不接 MCP 客户端）
-  lcs-mcp init [--config <path>]       生成默认配置文件
+  lcs-mcp serve [--config <path>]      前台常驻：调度器 + Web（服务管理器包这层）
+  lcs-mcp start [--config <path>]      后台启动常驻服务（写 pid/日志，等健康检查通过才返回）
+  lcs-mcp stop                         停止后台服务（SIGTERM，10s 不退再 SIGKILL）
+  lcs-mcp restart                      = stop + start
+  lcs-mcp status                       看是否在跑（在跑则打印 pid / 地址 / 调度器状态）
+  lcs-mcp logs [-f] [--tail <n>]       看后台日志（默认最后 100 行，-f 跟随）
+  lcs-mcp init [--config <path>]       生成默认配置文件（不预置厂商）
   lcs-mcp doctor [--config <path>]     安装自检：还差什么（dsh/配置/凭据/守护进程/插件接线）
   lcs-mcp gc [--dry-run]               清理审计：预览/执行一次 GC（只碰 LCS 自己的会话与产物）
 
@@ -95,6 +136,8 @@ function printHelp(): void {
       --no-mcp          不启动 MCP stdio
       --no-scheduler    不启动自动 tick（只保留手动 tick）
       --force           忽略单实例锁
+      --tail <n>        logs：显示最后 n 行（默认 100）
+  -f, --follow          logs：持续跟随输出
   -h, --help            显示帮助
   -v, --version         显示版本
 
@@ -112,6 +155,12 @@ interface LockInfo {
   pid: number;
   startedAt: number;
   configFile: string;
+  /**
+   * 本次运行实际使用的 Web 地址。
+   * 必须是**运行时真相**：`--port` / `LCS_PORT` 只在启动进程的环境里生效，
+   * 换个 shell 跑 `status` 读 config 会读到 7788 而误判「Web 没响应」。
+   */
+  webUrl?: string;
 }
 
 function lockHolder(stateFile: string): LockInfo | null {
@@ -125,7 +174,7 @@ function lockHolder(stateFile: string): LockInfo | null {
   return null;
 }
 
-function acquireLock(stateFile: string, force: boolean): () => void {
+function acquireLock(stateFile: string, force: boolean, webUrl?: string): () => void {
   const lockFile = `${stateFile}.lock`;
   if (!force) {
     const holder = lockHolder(stateFile);
@@ -136,7 +185,7 @@ function acquireLock(stateFile: string, force: boolean): () => void {
     }
   }
   fs.mkdirSync(path.dirname(lockFile), { recursive: true, mode: 0o700 });
-  const info: LockInfo = { pid: process.pid, startedAt: Date.now(), configFile: "" };
+  const info: LockInfo = { pid: process.pid, startedAt: Date.now(), configFile: "", webUrl };
   fs.writeFileSync(lockFile, JSON.stringify(info), { encoding: "utf8", mode: 0o600 });
   return () => {
     try {
@@ -155,6 +204,265 @@ function isAlive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+// ---------------------------------------------------------------- 后台服务生命周期
+//
+// 产品形态是「7×24 常驻的调度服务」：用户装完只需要 `lcs-mcp start`，不该自己写 nohup。
+// 这里不引入 systemd（各人机器上怎么托管由用户决定），只做三件事：
+//   start  后台拉起 `serve`，日志落盘，等健康检查通过再返回（失败就把日志尾巴打出来）
+//   stop   SIGTERM → 最多等 10s → SIGKILL
+//   status 读单实例锁 + 探 /api/health，回答「在跑吗、pid 多少、调度器状态」
+
+function logFileFor(stateFile: string): string {
+  return path.join(path.dirname(stateFile), "logs", "lcs.log");
+}
+
+/** 单实例锁（`${stateFile}.lock`）是「谁在跑」的唯一真相源。 */
+function lockFileFor(stateFile: string): string {
+  return `${stateFile}.lock`;
+}
+
+/** 下次 `npm i -g` 换版本后，旧路径可能失效，所以按当前模块位置推导 bin。 */
+function cliEntryPath(): string {
+  return fileURLToPath(new URL("../bin/lcs-mcp.js", import.meta.url));
+}
+
+/** 日志超过 5MB 时滚动一份 .1（不做完整轮转：一天一个文件对排查已经够用）。 */
+function rotateLog(logFile: string, maxBytes = 5 * 1024 * 1024): void {
+  try {
+    if (fs.statSync(logFile).size < maxBytes) return;
+    fs.renameSync(logFile, `${logFile}.1`);
+  } catch {
+    /* 文件不存在或没有权限：忽略 */
+  }
+}
+
+function tailLines(file: string, n: number, maxBytes = 512 * 1024): string[] {
+  let fd: number;
+  try {
+    fd = fs.openSync(file, "r");
+  } catch {
+    return [];
+  }
+  try {
+    const size = fs.fstatSync(fd).size;
+    const start = Math.max(0, size - maxBytes);
+    const buf = Buffer.alloc(size - start);
+    fs.readSync(fd, buf, 0, buf.length, start);
+    const lines = buf.toString("utf8").split("\n");
+    if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+    return lines.slice(-n);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+async function probeHealth(url: string, timeoutMs = 1500): Promise<boolean> {
+  try {
+    const resp = await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!resp.ok) return false;
+    const body = (await resp.json()) as { ok?: boolean };
+    return body.ok === true;
+  } catch {
+    return false;
+  }
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+function loadForDaemon(configPath: string): { config: Config; configPath: string } | null {
+  const loaded = loadConfig(configPath);
+  if (!loaded.exists) {
+    console.error(`配置不存在: ${loaded.path}`);
+    console.error("先跑 `lcs-mcp init`，然后 `lcs-mcp start`。");
+    process.exitCode = 1;
+    return null;
+  }
+  return { config: loaded.config, configPath: loaded.path };
+}
+
+/** `lcs-mcp start`：后台拉起常驻服务，等健康检查通过再返回。 */
+async function startDaemon(configPath: string, force: boolean): Promise<void> {
+  const loaded = loadForDaemon(configPath);
+  if (!loaded) return;
+  const { config } = loaded;
+  const stateFile = config.engine.stateFile;
+  const holder = lockHolder(stateFile);
+  const url = holder?.webUrl ?? webUrl(config);
+
+  if (holder && !force) {
+    const alive = await probeHealth(url);
+    console.log(
+      `已在运行：pid=${holder.pid} ${alive ? url : `${url}（Web 无响应，可能卡住了）`}`,
+    );
+    console.log("要重启用 `lcs-mcp restart`，停掉用 `lcs-mcp stop`。");
+    return;
+  }
+  if (holder && force) {
+    console.log(`--force：先停掉已在运行的 pid=${holder.pid}`);
+    await stopDaemon(configPath, { quiet: true });
+  }
+
+  const logFile = logFileFor(stateFile);
+  fs.mkdirSync(path.dirname(logFile), { recursive: true, mode: 0o700 });
+  rotateLog(logFile);
+  const fd = fs.openSync(logFile, "a", 0o600);
+  const args = [cliEntryPath(), "serve", "--config", loaded.configPath];
+  const child = spawn(process.execPath, args, {
+    detached: true,
+    stdio: ["ignore", fd, fd],
+    env: { ...process.env },
+    cwd: process.cwd(),
+  });
+  child.unref();
+  fs.closeSync(fd);
+
+  // 等健康检查（Web 关掉时只能看进程是否还活着 + 锁是否写好）
+  const webEnabled = config.engine.web.enabled;
+  const deadline = Date.now() + 15000;
+  let ready = false;
+  let exited = false;
+  child.on("exit", () => {
+    exited = true;
+  });
+  while (Date.now() < deadline) {
+    if (exited) break;
+    if (webEnabled) {
+      if (await probeHealth(url)) {
+        ready = true;
+        break;
+      }
+    } else if (lockHolder(stateFile)) {
+      ready = true;
+      break;
+    }
+    await sleep(200);
+  }
+
+  if (!ready) {
+    console.error(`启动失败：${exited ? "进程已退出" : "15 秒内没就绪"}`);
+    const tail = tailLines(logFile, 30);
+    if (tail.length > 0) {
+      console.error(`--- ${logFile} 最后 ${tail.length} 行 ---`);
+      console.error(tail.join("\n"));
+    }
+    console.error("排查：`lcs-mcp doctor`，或用 `lcs-mcp serve` 前台启动看完整输出。");
+    process.exitCode = 1;
+    return;
+  }
+
+  const info = lockHolder(stateFile);
+  console.log(`已启动：pid=${info?.pid ?? child.pid} ${webEnabled ? url : "(Web 已关闭)"}`);
+  if (!webEnabled) console.log("提示：`engine.web.enabled=false`，没有 Web 控制台，只能用 MCP 接入。");
+  console.log(`日志：${logFile}（\`lcs-mcp logs -f\` 跟随）`);
+  console.log("停止：`lcs-mcp stop`；自检：`lcs-mcp doctor`。");
+}
+
+/** `lcs-mcp stop`：SIGTERM，最多等 10s，不退再 SIGKILL。 */
+async function stopDaemon(
+  configPath: string,
+  options: { quiet?: boolean } = {},
+): Promise<boolean> {
+  const loaded = loadForDaemon(configPath);
+  if (!loaded) return false;
+  const stateFile = loaded.config.engine.stateFile;
+  const holder = lockHolder(stateFile);
+  if (!holder) {
+    // 清掉过期锁，避免下次 start 误判
+    fs.rmSync(lockFileFor(stateFile), { force: true });
+    if (!options.quiet) console.log("没在运行。");
+    return false;
+  }
+  try {
+    process.kill(holder.pid, "SIGTERM");
+  } catch (error) {
+    if (!options.quiet) console.error(`发信号失败：${String(error)}`);
+    return false;
+  }
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline && isAlive(holder.pid)) await sleep(100);
+  if (isAlive(holder.pid)) {
+    if (!options.quiet) console.log("10 秒未退出，发送 SIGKILL。");
+    try {
+      process.kill(holder.pid, "SIGKILL");
+    } catch {
+      /* 已经没了 */
+    }
+    await sleep(300);
+  }
+  fs.rmSync(lockFileFor(stateFile), { force: true });
+  if (!options.quiet) console.log(`已停止 pid=${holder.pid}。`);
+  return true;
+}
+
+/** `lcs-mcp status`：在跑吗、pid、地址、调度器状态。 */
+async function statusDaemon(configPath: string): Promise<void> {
+  const loaded = loadForDaemon(configPath);
+  if (!loaded) return;
+  const { config } = loaded;
+  const stateFile = config.engine.stateFile;
+  const holder = lockHolder(stateFile);
+  // 以锁定记录的实际地址为准（`--port` 覆盖不会写进配置文件）
+  const url = holder?.webUrl ?? webUrl(config);
+  if (!holder) {
+    console.log(`没在运行（state=${stateFile}）`);
+    console.log("启动：`lcs-mcp start`；后台日志：`lcs-mcp logs`。");
+    process.exitCode = 1;
+    return;
+  }
+  const alive = await probeHealth(url);
+  const startedAt = new Date(holder.startedAt).toLocaleString("zh-CN", { hour12: false });
+  console.log(`运行中：pid=${holder.pid} 启动于 ${startedAt}`);
+  console.log(`  Web      ${alive ? url : `${url}（无响应）`}`);
+  console.log(`  dshHome  ${config.engine.dshHome}`);
+  console.log(`  日志     ${logFileFor(stateFile)}`);
+  if (!alive) {
+    console.log("Web 没响应，但进程还活着：看 `lcs-mcp logs` 确认是否卡住，必要时 `lcs-mcp stop`。");
+    process.exitCode = 1;
+    return;
+  }
+  try {
+    const resp = await fetch(`${url}/api/status`, { signal: AbortSignal.timeout(3000) });
+    const snap = (await resp.json()) as {
+      scheduler?: { started?: boolean; paused?: boolean; tickCount?: number; tickSeconds?: number };
+      tasks?: Record<string, number>;
+      gc?: { refused?: string | null };
+    };
+    const sched = snap.scheduler ?? {};
+    console.log(
+      `  调度器   ${sched.started ? "运行中" : "未启动"}` +
+        `${sched.paused ? "（已暂停）" : ""} · tick ${sched.tickCount ?? 0} 次 / 每 ${sched.tickSeconds ?? "?"}s`,
+    );
+    const tasks = snap.tasks ?? {};
+    const busy = Object.entries(tasks)
+      .filter(([, n]) => n > 0)
+      .map(([state, n]) => `${state}=${n}`)
+      .join(" ");
+    console.log(`  任务     ${busy || "无"}`);
+    if (snap.gc?.refused) console.log(`  ⚠ 清理已停用：${snap.gc.refused}`);
+  } catch (error) {
+    console.log(`  状态读取失败：${String(error)}`);
+  }
+}
+
+/** `lcs-mcp logs`：看后台日志（-f 跟随，由 tail 负责）。 */
+async function logsCommand(configPath: string, tail: number, follow: boolean): Promise<void> {
+  const loaded = loadForDaemon(configPath);
+  if (!loaded) return;
+  const logFile = logFileFor(loaded.config.engine.stateFile);
+  if (!fs.existsSync(logFile)) {
+    console.log(`还没有日志文件：${logFile}`);
+    console.log("服务至少启动过一次才会有日志（`lcs-mcp start`）。");
+    return;
+  }
+  if (follow) {
+    const child = spawn("tail", ["-n", String(tail), "-f", logFile], { stdio: "inherit" });
+    await new Promise<void>((resolve) => child.on("exit", () => resolve()));
+    return;
+  }
+  const lines = tailLines(logFile, tail);
+  process.stdout.write(lines.length > 0 ? `${lines.join("\n")}\n` : "");
 }
 
 /**
@@ -176,7 +484,8 @@ async function runGcCommand(configPath: string, dryRun: boolean): Promise<void> 
 
   const holder = lockHolder(config.engine.stateFile);
   if (holder) {
-    const url = webUrl(config);
+    // 用锁里记录的实际地址：`--port` 覆盖不会写进配置文件
+    const url = holder.webUrl ?? webUrl(config);
     try {
       const resp = await fetch(`${url}/api/gc`, {
         method: "POST",
@@ -190,6 +499,7 @@ async function runGcCommand(configPath: string, dryRun: boolean): Promise<void> 
         removedProjections: number;
         removedArtifacts: number;
         foreignSessions: number;
+        refused?: string;
         details: Array<{ taskId: string; sessionId: string | null }>;
       };
       printGcResult(result, `守护进程 pid=${holder.pid} @ ${url}`);
@@ -214,10 +524,18 @@ function printGcResult(
     removedProjections: number;
     removedArtifacts: number;
     foreignSessions: number;
+    refused?: string;
     details: Array<{ taskId: string; sessionId: string | null }>;
   },
   where: string,
 ): void {
+  if (result.refused) {
+    console.error(`清理被安全校验拒绝 —— ${where}`);
+    console.error(`  ${result.refused}`);
+    console.error("  没有删除任何东西。修好 engine.dshHome 后重试。");
+    process.exitCode = 1;
+    return;
+  }
   const head = result.dryRun ? "清理预览（未删除任何东西）" : "清理完成";
   console.log(`${head} —— ${where}`);
   if (result.details.length === 0) {
@@ -249,6 +567,29 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     return;
   }
 
+  if (options.command === "start") {
+    await startDaemon(configPath, options.force);
+    return;
+  }
+  if (options.command === "stop") {
+    await stopDaemon(configPath);
+    return;
+  }
+  if (options.command === "restart") {
+    await stopDaemon(configPath, { quiet: true });
+    await sleep(300);
+    await startDaemon(configPath, true);
+    return;
+  }
+  if (options.command === "status") {
+    await statusDaemon(configPath);
+    return;
+  }
+  if (options.command === "logs") {
+    await logsCommand(configPath, options.tail, options.follow);
+    return;
+  }
+
   if (options.command === "doctor") {
     const checks = await runDoctor({ configPath });
     const report = formatDoctor(checks);
@@ -263,16 +604,28 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    saveConfig(exampleConfig(), configPath);
+    const config = exampleConfig();
+    saveConfig(config, configPath);
+    const url = webUrl(finalizeConfig(config, configPath, path.dirname(configPath)));
     log(`已生成 ${configPath}`);
-    log("下一步：填好 provider 的 API Key（或 apiKeyFile / 环境变量），然后运行 `lcs-mcp serve`");
+    console.log(`
+下一步（3 步就能跑起来）:
+  1. 启动常驻服务   lcs-mcp start
+  2. 打开控制台     ${url}
+  3. 添加厂商       「添加 LLM」→ 选厂商 → 填 API Key → 保存，然后到「容量」页刷新
+    （不预置厂商：没有 Key 的厂商在自检里只会变成一条失败项）
+
+随时自检: lcs-mcp doctor      后台日志: lcs-mcp logs -f      停止: lcs-mcp stop
+`);
     return;
   }
 
   let loaded = loadConfig(configPath);
   if (!loaded.exists) {
-    saveConfig(loaded.config, loaded.path);
-    log(`未找到配置，已生成默认配置: ${loaded.path}`);
+    // 首次直接 `serve`：同样生成「零厂商」的初始配置，与 `init` 保持一致
+    saveConfig(exampleConfig(), loaded.path);
+    log(`未找到配置，已生成初始配置: ${loaded.path}`);
+    loaded = loadConfig(loaded.path);
   }
   let config: Config = loaded.config;
   const baseDir = loaded.baseDir;
@@ -327,7 +680,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     logError("dsh profile 自举失败（执行任务会失败）", error);
   }
 
-  const releaseLock = acquireLock(config.engine.stateFile, options.force);
+  const releaseLock = acquireLock(config.engine.stateFile, options.force, webUrl(config));
   const store = Store.open(config.engine.stateFile);
   const engine = new Engine({ config, baseDir, store });
 
