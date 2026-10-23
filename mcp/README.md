@@ -20,7 +20,10 @@
 | **客户端** | MCP Server（stdio）/ **dsh 插件**（原生 `lcs_*` 工具） | agent 侧，按需连调度服务 |
 
 - **agent 接入**：dsh 里 `dsh plugin --profile web add llm-capacity-scheduler-mcp` 装个插件，
-  就有原生 `lcs_*` 工具；或者任何 MCP 客户端配一条 stdio server。
+  再把包名加进该 profile `package.json` 的 `dsh.profile.bundles`（**漏了就是装了但不加载**），
+  就有原生 `lcs_*` 工具；或者任何 MCP 客户端配一条 stdio server。详见仓库根目录 README §1.1。
+- **服务托管**：`lcs-mcp start` 是手动后台；要开机自启 / 7×24，用仓库里的
+  `scripts/install-service.sh` 装成 systemd 用户级服务（见根目录 README §1.2）。
 - **人用**：浏览器打开 `http://127.0.0.1:7788` 改配置、看容量、提交任务、追产物。
 - **零原生依赖**：状态是单文件 JSON（原子写），`npm i` 不需要编译工具链。
 

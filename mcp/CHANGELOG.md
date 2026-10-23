@@ -3,6 +3,25 @@
 本项目的版本变更记录。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+
+- **运维脚本 `scripts/install-service.sh`**：把常驻服务托管成 systemd **用户级**服务，
+  开机自启、7×24。自动探测 `node` / `lcs-mcp` / 配置路径，`Restart=always` +
+  `StartLimitIntervalSec=0`（崩溃无限拉回）、`KillMode=control-group`（停服务连 dsh 子进程一起收），
+  支持 `--dry-run` / `--check` / `--uninstall`，幂等可重跑。
+
+### 修复
+
+- **文档：dsh 插件安装漏了 bundle 注册步骤**。`dsh plugin --profile <p> add` 只是 pnpm 透传，
+  只在**新建** profile 时自动把包写进 `dsh.profile.bundles`；如果首次安装的 pnpm 阶段失败
+  （典型：pnpm 11 的 `ERR_PNPM_IGNORED_BUILDS`），依赖已落盘而 bundle 行没写，重跑会得到
+  "Already up to date" 空操作 → 最终状态是「装了但不加载」。README §1.1 / RELEASING §4
+  补上手工注册步骤与 `--dump-config | grep lcs-client` 验证法。
+- **`scripts/release.sh --verify-plugin` 增加 bundle 注册独立断言**：不再只靠 `--dump-config`
+  的间接证据，profile `package.json` 里必须有 `llm-capacity-scheduler-mcp` 这一行，否则直接失败。
+
 ## [0.4.1] — 2026-10-23
 
 首个对外发布版本。产品形态：**常驻调度服务 + dsh 执行器 + 薄客户端（MCP / dsh 插件）**。

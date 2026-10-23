@@ -320,6 +320,20 @@ if [ "$VERIFY_PLUGIN" = 1 ]; then
     die "插件没进 profile 的 dependencies"
   ok "已安装到 profile（dependencies 已登记）"
 
+  # bundle 注册独立断言：dsh plugin 在「依赖已存在」时会走 "Already up to date" 空操作，
+  # 若首次 pnpm 阶段失败过，依赖写进去了、bundle 行却没写 → 装了但不加载。
+  # 这里单独查一次，避免只靠 dump-config 的间接证据。
+  node -e '
+    const fs = require("fs");
+    const p = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const b = p.dsh?.profile?.bundles ?? [];
+    if (!b.includes("llm-capacity-scheduler-mcp")) {
+      console.error("bundles 现在的内容：" + JSON.stringify(b));
+      process.exit(1);
+    }
+  ' "$PROFILE_MANIFEST" || die "插件没注册到 dsh.profile.bundles（装了但不加载）"
+  ok "已注册到 dsh.profile.bundles"
+
   DSH_HOME="$DSH_TMP_HOME" dsh --profile reltest --dump-config >"$TMP/dump.yml" 2>/dev/null ||
     die "dsh --dump-config 失败"
   grep -q 'lcs-client' "$TMP/dump.yml" || die "插件 patch 行（lcs-client）没有进加载树"

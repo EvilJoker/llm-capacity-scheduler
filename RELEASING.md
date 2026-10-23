@@ -125,6 +125,26 @@ dsh plugin --profile web add \
   https://github.com/<owner>/<repo>/releases/download/v$V/llm-capacity-scheduler-mcp-$V.tgz
 ```
 
+⚠️ **②③ 之后还要注册 bundle，否则「装了但不加载」**：`dsh plugin` 只是 pnpm 透传，
+不会往 `dsh.profile.bundles` 写那一行。补完后 `dsh --profile web --dump-config | grep lcs-client`
+能看到 `- id: lcs-client` 才算接上：
+
+```bash
+node -e '
+  const fs = require("fs"), f = process.env.HOME + "/.dsh/profiles/web/package.json";
+  const p = JSON.parse(fs.readFileSync(f, "utf8"));
+  if (!p.dsh.profile.bundles.includes("llm-capacity-scheduler-mcp")) {
+    p.dsh.profile.bundles.push("llm-capacity-scheduler-mcp");
+    fs.writeFileSync(f, JSON.stringify(p, null, 2) + "\n");
+  }
+'
+```
+
+> Release 流水线的插件验证（`scripts/release.sh --verify-plugin`）走的就是完整流程
+> （装包 → 注册 bundle → 在 `--dump-config` 里查 `lcs-client`），所以 CI 绿 = 这条链路可用。
+> 另外 `dsh plugin add` 可能因 pnpm 11 的 `allowBuilds` 占位符报 `ERR_PNPM_IGNORED_BUILDS`，
+> 按提示把 `pnpm-workspace.yaml` 里那条改成 `true`/`false` 再重跑。
+
 校验：
 
 ```bash

@@ -83,6 +83,7 @@ curl -s --max-time 3 http://127.0.0.1:7788/api/health \
 | 情况 | 动作 |
 |---|---|
 | 装了但没启动 | `lcs-mcp start`（后台常驻；`lcs-mcp status` 看是否成功） |
+| 重启机器就没了 | 托管成 systemd 用户级服务，见 §1.2（开机自启、7×24） |
 | 没装 | `npm install -g llm-capacity-scheduler-mcp`，然后 `lcs-mcp init && lcs-mcp start` |
 | 启动了但 `doctor` 有 ✗ | 见 §11；**不要**自己改 `~/.lcs/dsh-home` 或 `~/.dsh` |
 | 没有权限装包 | 停下来，把 §12 的交接模板给人 |
@@ -94,8 +95,24 @@ curl -s --max-time 3 http://127.0.0.1:7788/api/health \
 三种接法，任选：
 
 ```bash
-# ① dsh 用户（推荐）：装插件 → 重启 dsh → agent 原生多出 7 个 lcs_* 工具
-dsh plugin --profile web add llm-capacity-scheduler-mcp
+# ① dsh 用户（推荐）：a 装包 → b 注册 bundle → c 验证 → 重启 dsh
+#    完成后 agent 会话里会原生多出 7 个 lcs_* 工具
+dsh plugin --profile web add llm-capacity-scheduler-mcp     # a. 装依赖（就是 pnpm add 的透传）
+
+# b. 注册 bundle —— ⚠️ 这一步 dsh plugin 不会替你做，漏了就是「装了但不加载」
+node -e '
+  const fs = require("fs"), f = process.env.HOME + "/.dsh/profiles/web/package.json";
+  const p = JSON.parse(fs.readFileSync(f, "utf8"));
+  const b = p.dsh.profile.bundles;
+  if (!b.includes("llm-capacity-scheduler-mcp")) {
+    b.push("llm-capacity-scheduler-mcp");
+    fs.writeFileSync(f, JSON.stringify(p, null, 2) + "\n");
+    console.log("已注册 bundle");
+  } else console.log("bundle 已存在");
+'
+
+dsh --profile web --dump-config | grep -A2 lcs-client         # c. 能看到 - id: lcs-client 才算接上
+# 然后重启 dsh（web/tui 都要重启进程才加载新插件）
 
 # ② 任意 MCP 客户端：加一条 stdio server 配置
 #    { "mcpServers": { "lcs": { "command": "lcs-mcp", "args": ["--config", "/home/you/.lcs/config.json"] } } }
@@ -107,12 +124,45 @@ dsh plugin --profile web add llm-capacity-scheduler-mcp
 > `npm install -g <asset>.tgz` / `dsh plugin --profile web add <asset-url>`，详见
 > [`RELEASING.md`](RELEASING.md) §4。
 >
+> **装插件报 `ERR_PNPM_IGNORED_BUILDS`**：pnpm 11 要求对 profile 里**已有**插件的 postinstall
+> 明确表态（不是我们包的错）。按提示把 `~/.dsh/profiles/<profile>/pnpm-workspace.yaml` 里
+> `allowBuilds:` 下那条的占位值 `set this to true or false` 改成 `true`（或 `false`），再重跑 `dsh plugin`。
+>
 > 裸跑 `lcs-mcp`（不带子命令）= **MCP stdio + 调度器 + Web**，供客户端当子进程拉起。
 > 如果已经有常驻服务在跑，它会自动降级成 **HTTP 代理**接入同一个实例，
 > 不会出现两个进程抢写状态（这是设计，不是 bug）。
 >
 > `lcs-mcp serve` 是**前台**版常驻（不接 MCP），给 systemd / pm2 之类的托管用；
 > 日常用 `lcs-mcp start`（后台）就够了。
+
+### 1.2 常驻托管：开机自启、7×24
+
+`lcs-mcp start` 是「手动后台」，机器一重启就没了。要 7×24 就用 systemd **用户级**服务
+（不需要 root；`linger` 打开后开机即起、不要求有人登录）：
+
+```bash
+bash scripts/install-service.sh --dry-run   # 先看要写入的 unit，不动手
+bash scripts/install-service.sh             # 安装/更新并启动（幂等，可反复跑）
+bash scripts/install-service.sh --check     # 看 enabled / active / linger / main pid
+bash scripts/install-service.sh --uninstall # 停用并删除 unit
+```
+
+脚本会自动探测 `node` / `lcs-mcp` / 配置路径并写 `~/.config/systemd/user/lcs-mcp.service`：
+
+- `Restart=always` + `StartLimitIntervalSec=0` → 崩溃无限拉回（不会被 systemd 打成 failed 终态）
+- `KillMode=control-group` → 停服务时连正在跑的 dsh 执行器一起收，不留孤儿
+- `PATH` 里带上 `dsh` 所在目录（执行器靠 `dsh` 命令名解析）；`TZ` 决定 policy 的工作时段窗口
+
+> ⚠️ **服务由 systemd 托管后，不要再用 `lcs-mcp stop` 停它** —— 会被 `Restart=always`
+> 立刻拉回。用 `systemctl --user stop lcs-mcp.service`。
+> 日志：`tail -f ~/.lcs/logs/lcs.log`（引擎自己的），或
+> `journalctl _PID=$(systemctl --user show -p MainPID --value lcs-mcp.service) -f`。
+
+**升级版本**：把新包装到 `lcs-mcp` 原地（`npm i -g llm-capacity-scheduler-mcp@x.y.z`，
+或 prefix 安装覆盖同一路径），然后 `systemctl --user restart lcs-mcp.service`；
+unit 内容没变就不必重跑脚本（跑也无害，脚本是幂等的）。
+
+
 
 ---
 
