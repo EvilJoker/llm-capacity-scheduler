@@ -24,8 +24,10 @@ import fs from "node:fs";
 import path from "node:path";
 
 import type { Config } from "./config.js";
+import { unsafeDshHomeReason } from "./safety.js";
 import type { Store } from "./store.js";
 import { TERMINAL_STATES } from "./types.js";
+import { expandHome } from "./util.js";
 
 /** 单个 task 的清理明细（审计用）。 */
 export interface GcDetail {
@@ -48,17 +50,31 @@ export interface GcResult {
    * 只是统计，**永远不会被删**（它们只可能来自手工调试或历史遗留）。
    */
   foreignSessions: number;
+  /**
+   * 非空 = 本次**拒绝执行**清理，值为原因。
+   *
+   * 兜底：配置校验（validateConfig）已经会拒绝危险 dshHome，但 GC 是唯一会
+   * `rm -rf` 的代码路径，所以它在动手前自己再判一次（配置被热加载改坏、
+   * 或有人绕过 Engine 直接调用时也不会误删）。
+   */
+  refused?: string;
 }
 
 export interface GcOptions {
   dryRun?: boolean;
   /** 单次最多删除多少个会话（避免一次 tick 做太多 IO） */
   maxPerCall?: number;
+  /**
+   * 用户家目录（默认 `os.homedir()`）。
+   * 只有测试/嵌入场景需要显式传：安全校验要判断 dshHome 是否落在 `<homedir>/.dsh` 下。
+   */
+  homedir?: string;
 }
 
 /** LCS 执行器专用 DSH_HOME（会话与投影都在这里，绝不碰用户的 ~/.dsh）。 */
 function dshHome(config: Config): string {
-  return config.engine.dshHome;
+  // 再做一次 `~` 展开：Engine 已经归一过，但 gcExpired 也可能被直接调用（测试 / 嵌入）。
+  return path.resolve(expandHome(config.engine.dshHome));
 }
 
 function sessionsRoot(config: Config): string {
@@ -164,6 +180,13 @@ export function gcExpired(
     details: [],
     foreignSessions: 0,
   };
+
+  // 动手之前的最后一道闸：家目录不安全就整个跳过（不删任何东西）。
+  // 这是事故的直接防线：宁可这次不清理，也不能靠一次字符串比对去赌用户的会话还在。
+  const unsafeHome = unsafeDshHomeReason(config.engine.dshHome, options.homedir);
+  if (unsafeHome) {
+    return { ...result, refused: unsafeHome };
+  }
 
   // 全量已知会话（含非终态）：用于统计陌生会话，也保证不会误判
   const known = new Set<string>();

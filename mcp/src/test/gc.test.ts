@@ -202,3 +202,47 @@ test("GC 审计：engine.runGc 把每次动作写进 store.gcLog", () => {
   assert.equal(fs.existsSync(dirS), false);
   assert.ok(engine.recentGc(10).length >= 1);
 });
+
+test("GC 拒跑：家目录指向 ~/.dsh（含符号链接）时一个都不删", () => {
+  const root = tmpDir("lcs-gc-refuse-");
+  const fakeHome = path.join(root, "home");
+  const userDsh = path.join(fakeHome, ".dsh");
+  fs.mkdirSync(userDsh, { recursive: true });
+  // 用户自己的会话（绝不能被动）
+  const userSession = path.join(userDsh, "sessions", "--home-u-proj--", "session-user-main");
+  fs.mkdirSync(userSession, { recursive: true });
+  fs.writeFileSync(path.join(userSession, "session.v4.jsonl.zstd"), "user data");
+  // 隔离目录其实是个指向 ~/.dsh 的符号链接 —— 旧版字符串比对会放行
+  const sneaky = path.join(fakeHome, ".lcs", "dsh-home");
+  fs.mkdirSync(path.dirname(sneaky), { recursive: true });
+  fs.symlinkSync(userDsh, sneaky, "dir");
+
+  const store = Store.open(path.join(root, "state.json"));
+  const config = {
+    engine: { sessionRetentionDays: 1, artifactsDir: path.join(root, "artifacts"), dshHome: sneaky },
+  } as never;
+  const done = makeTask();
+  store.submit(done);
+  store.transition(done.id, ["submitted"], "succeeded", {
+    finishedAt: Date.now() - 30 * 24 * 3600 * 1000,
+    // 即便 task 登记的 sessionId 正好和用户会话同名，也必须拒绝
+    checkpoint: { sessionId: "session-user-main", updatedAt: Date.now() },
+  });
+
+  const result = gcExpired(config, store, Date.now(), { homedir: fakeHome });
+  assert.match(String(result.refused), /~\/\.dsh/);
+  assert.equal(result.removedSessions, 0);
+  assert.equal(fs.existsSync(userSession), true, "用户会话必须原封不动");
+});
+
+test("Engine 归一路径：未展开的 `~` 不会在 cwd 下造出字面 `~` 目录", () => {
+  const dir = tmpDir("lcs-engine-home-");
+  const clock = new FakeClock(WED_14_35);
+  const config = makeConfig({ dir });
+  config.engine.dshHome = "~/.lcs/dsh-home";
+  config.engine.artifactsDir = "~/.lcs/artifacts";
+  const engine = buildEngine(config, clock, dir);
+  assert.ok(path.isAbsolute(engine.config.engine.dshHome), "dshHome 必须被展开成绝对路径");
+  assert.ok(engine.config.engine.dshHome.startsWith(os.homedir()), engine.config.engine.dshHome);
+  assert.ok(path.isAbsolute(engine.config.engine.artifactsDir));
+});

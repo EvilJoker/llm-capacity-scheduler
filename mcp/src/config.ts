@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { findVendorByKind } from "./provider-presets.js";
+import { unsafeDshHomeReason } from "./safety.js";
 import { atomicWriteFileSync, deepMerge, parseHHMM, readJsonFile, resolvePath } from "./util.js";
 import type { RunnerName } from "./types.js";
 
@@ -357,11 +358,12 @@ export function validateConfig(config: Config): void {
   if (!config.engine.dshHome) fail("engine.dshHome 不能为空");
   // 共享家目录 = 会话互相可见 = 清理时可能误删对方的会话（2026-10-22 真实事故）。
   // 这里直接拒绝启动，而不是等到某个 GC 周期把用户会话删掉才发现。
-  const sharedHome = path.join(os.homedir(), ".dsh");
-  if (path.resolve(config.engine.dshHome) === path.resolve(sharedHome)) {
+  // 判断必须走 realpath + 包含关系（见 safety.ts）：字符串比对会被符号链接 / 未展开的 `~` 绕过。
+  const unsafeHome = unsafeDshHomeReason(config.engine.dshHome);
+  if (unsafeHome) {
     fail(
-      "engine.dshHome 不能是 ~/.dsh：LCS 的会话必须与用户 dsh 的家目录隔离" +
-        "（否则 LCS 的清理会扫到用户自己的会话）。请改成独立目录，例如 ~/.lcs/dsh-home",
+      `${unsafeHome}。请改成独立目录，例如 ~/.lcs/dsh-home` +
+        "（LCS 的会话必须与用户 dsh 的家目录物理隔离）",
     );
   }
   if (!(config.engine.maxParallel >= 1)) fail("engine.maxParallel 必须 ≥ 1");
@@ -435,10 +437,19 @@ const INIT_README = [
   "lcs 配置文件。敏感信息建议放 apiKeyEnv 环境变量或 apiKeyFile 指向的文件。",
   "改完保存后引擎会热加载（Web 端 PUT /api/config 或重启进程）。",
   "providers.kind 支持 minimax / payg / mock；mock 用于本地演示与测试。",
+  "厂商请用 `lcs-mcp start` 后打开 Web 控制台点「添加 LLM」写入（选厂商 + 填 API Key）。",
 ];
 
+/**
+ * `lcs-mcp init` 生成的初始配置。
+ *
+ * 故意**不预置任何厂商**：新用户第一次跑 `doctor` 时，预置一个没有 Key 的厂商会直接变成
+ * 一个红色失败项（曾经的体验）。产品流程是「先起服务，再到 Web 添加厂商」，
+ * 所以初始配置只有引擎与执行器骨架。
+ */
 export function exampleConfig(): Config {
   const config = defaultConfig();
+  config.providers = [];
   (config as unknown as Record<string, unknown>)._readme = INIT_README;
   return config;
 }

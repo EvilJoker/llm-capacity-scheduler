@@ -15,6 +15,7 @@ import { execFileSync } from "node:child_process";
 import { defaultConfigPath, loadConfig, type Config } from "./config.js";
 import { collectDshRoutes, dshOptionsOf } from "./dsh-profile.js";
 import { resolveProviderKey } from "./provider-key.js";
+import { unsafeDshHomeReason } from "./safety.js";
 
 export type CheckLevel = "ok" | "warn" | "fail";
 
@@ -23,6 +24,15 @@ export interface CheckResult {
   level: CheckLevel;
   detail: string;
   hint?: string;
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export interface DoctorOptions {
@@ -150,19 +160,21 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<CheckResul
 
   // ── 4b. 执行器家目录隔离（2026-10-22 事故后新增）────────────────────
   if (config) {
-    const sharedHome = path.join(home, ".dsh");
-    const isolated = path.resolve(config.engine.dshHome) !== path.resolve(sharedHome);
+    // 与 validateConfig / GC 用同一个判断（realpath + 包含关系），否则 doctor 说 OK
+    // 而 GC 顺着符号链接删到用户家目录里去。
+    const unsafe = unsafeDshHomeReason(config.engine.dshHome, home);
+    const isolated = unsafe === null;
     const sessionsDir = path.join(config.engine.dshHome, "sessions");
     checks.push({
       name: "执行器家目录隔离",
       level: isolated ? "ok" : "fail",
       detail: isolated
         ? `${config.engine.dshHome}（会话只落在这里）`
-        : `${config.engine.dshHome} —— 与用户 dsh 家目录相同！`,
+        : `${config.engine.dshHome} —— ${unsafe}`,
       hint: isolated
         ? undefined
-        : "LCS 的 dshHome 不能是 ~/.dsh：共享家目录会让清理逻辑扫到用户自己的会话" +
-          "（2026-10-22 真实事故）。改成独立目录，例如 ~/.lcs/dsh-home。",
+        : "改成独立目录，例如 ~/.lcs/dsh-home；共享 ~/.dsh 会让清理逻辑扫到用户自己的会话" +
+          "（2026-10-22 真实事故）。",
     });
     checks.push({
       name: "执行器会话目录",
@@ -173,9 +185,24 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<CheckResul
   }
 
   // ── 5. 守护进程（7×24 常驻服务）──────────────────────────────────
-  const daemonUrl = config
+  let daemonUrl = config
     ? `http://${config.engine.web.host === "0.0.0.0" ? "127.0.0.1" : config.engine.web.host}:${config.engine.web.port}`
     : "http://127.0.0.1:7788";
+  // 以运行时锁文件记录的地址为准：`--port` / `LCS_PORT` 只影响启动进程的环境，
+  // 不会写回配置文件，否则这里会误报「没在跑」。
+  if (config) {
+    try {
+      const lock = JSON.parse(readFile(`${config.engine.stateFile}.lock`)) as {
+        pid?: number;
+        webUrl?: string;
+      };
+      // 只认活着的实例：进程没了但锁还在，是残留文件，不该拿它当「运行中」
+      const lockAlive = !lock.pid || pidAlive(lock.pid);
+      if (lockAlive && lock.webUrl) daemonUrl = lock.webUrl;
+    } catch {
+      /* 没有锁文件：用配置里的地址 */
+    }
+  }
   const health = options.fetchHealth ?? defaultHealth;
   const alive = await health(daemonUrl);
   checks.push({
@@ -184,7 +211,8 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<CheckResul
     detail: alive ? `运行中：${daemonUrl}` : `没在跑：${daemonUrl}`,
     hint: alive
       ? undefined
-      : "调度器要常驻才干活：`systemctl --user start lcs`（或直接 `lcs-mcp serve`）。",
+      : "调度器要常驻才干活：`lcs-mcp start`（后台守护，日志 `lcs-mcp logs`）；" +
+        "想开机自启 / 崩溃重启，用你的服务管理器（systemd/pm2）包一层 `lcs-mcp serve`。",
   });
 
   // ── 6. dsh 插件接线 ─────────────────────────────────────────────

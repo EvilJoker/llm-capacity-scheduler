@@ -42,7 +42,7 @@ import {
   type TaskState,
   type TickReport,
 } from "./types.js";
-import { log, logError, nowMs, uid } from "./util.js";
+import { resolvePath, log, logError, nowMs, uid } from "./util.js";
 import { buildRunners, collectRunnerRoutes, type RunnerMap } from "./runner/index.js";
 import { gcExpired, type GcResult } from "./gc.js";
 import { readCheckpoint } from "./runner/exec.js";
@@ -60,6 +60,19 @@ export interface EngineOptions {
   adapters?: Adapter[];
   runners?: RunnerMap;
   clock?: () => number;
+}
+
+/**
+ * 把配置里的路径字段归一成绝对路径（展开 `~`）。
+ *
+ * 为什么在 Engine 里再做一次：正常入口（loadConfig）已经归一过，但 Engine 也会被
+ * 测试 / 嵌入方直接构造。一旦拿到未归一的 `"~/.lcs/dsh-home"`，`path.join` 会把它
+ * 当相对路径，在进程 cwd 下真的建出一个名为 `~` 的目录（2026-10-23 实测复现过）。
+ */
+function normalizePaths(config: Config, baseDir: string): void {
+  config.engine.dshHome = resolvePath(config.engine.dshHome, baseDir);
+  config.engine.artifactsDir = resolvePath(config.engine.artifactsDir, baseDir);
+  config.engine.workDir = resolvePath(config.engine.workDir, baseDir);
 }
 
 export interface SchedulerState {
@@ -83,6 +96,8 @@ export class Engine {
   private timer: NodeJS.Timeout | null = null;
   private ticking = false;
   private baseDir: string;
+  /** 上一次被拒绝的 GC 原因（用于日志去重） */
+  private lastGcRefused: string | null = null;
 
   paused = false;
   started = false;
@@ -95,6 +110,7 @@ export class Engine {
   constructor(options: EngineOptions) {
     this.config = options.config;
     this.baseDir = options.baseDir;
+    normalizePaths(this.config, this.baseDir);
     this.store = options.store;
     this.clock = options.clock ?? nowMs;
     this.policy = new BurnBeforeExpiryPolicy(this.config.policy);
@@ -111,6 +127,7 @@ export class Engine {
   reload(config: Config, baseDir = this.baseDir): void {
     this.config = config;
     this.baseDir = baseDir;
+    normalizePaths(this.config, this.baseDir);
     this.policy = new BurnBeforeExpiryPolicy(config.policy);
     this.adapters = buildAdapters(config.providers, { store: this.store });
     this.runners = buildRunners(config, baseDir);
@@ -781,6 +798,15 @@ export class Engine {
   runGc(options: { dryRun?: boolean; maxPerCall?: number } = {}): GcResult {
     const now = this.now();
     const result = gcExpired(this.config, this.store, now, options);
+    if (result.refused) {
+      // 隔离家目录不安全 → 整轮跳过。只记一次日志（按原因去重），避免每 30 个 tick 刷屏。
+      if (this.lastGcRefused !== result.refused) {
+        this.lastGcRefused = result.refused;
+        logError(`gc 已跳过（家目录不安全）：${result.refused}`);
+      }
+      return result;
+    }
+    this.lastGcRefused = null;
     for (const detail of result.details) {
       this.store.appendGcLog({
         ts: now,
@@ -825,6 +851,8 @@ export class Engine {
         dshHome: this.config.engine.dshHome,
         sessionRetentionDays: this.config.engine.sessionRetentionDays,
         recent: this.recentGc(10),
+        /** 非空 = 清理被安全校验拦下了（家目录指向了用户 ~/.dsh 等） */
+        refused: this.lastGcRefused,
       },
       policy: {
         name: this.config.policy.name,
