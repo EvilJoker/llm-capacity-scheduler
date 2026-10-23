@@ -70,3 +70,4 @@ htmlcov/
 *.swo
 .DS_Store
 Thumbs.db
+.specstory

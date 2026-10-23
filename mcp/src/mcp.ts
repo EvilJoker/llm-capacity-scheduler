@@ -10,6 +10,8 @@
  * 工具的参数契约来自 `tool-specs.ts`（与 dsh 插件共用一份），这里只负责翻译成 zod。
  */
 
+import fs from "node:fs";
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -17,7 +19,26 @@ import { z } from "zod";
 import type { ToolBackend } from "./backend.js";
 import { TOOL_SPECS, type ToolParamSpec, type ToolSpec } from "./tool-specs.js";
 
-export const VERSION = "0.4.1";
+/**
+ * 版本号**只有一处真源**：package.json。
+ *
+ * 之前这里手写 "0.4.1"，发版时必须记得改两处（package.json + 这里），
+ * 忘了就会「npm 包 0.4.2、--version 还是 0.4.1」。改成运行时读包内 package.json：
+ * dist/mcp.js → ../package.json 就是包根（仓库里是 mcp/package.json，安装后是
+ * node_modules/llm-capacity-scheduler-mcp/package.json），两边都成立。
+ */
+function readPackageVersion(): string {
+  try {
+    const raw = fs.readFileSync(new URL("../package.json", import.meta.url), "utf8");
+    const parsed = JSON.parse(raw) as { version?: unknown };
+    if (typeof parsed.version === "string" && parsed.version) return parsed.version;
+  } catch {
+    /* 读不到就回退，避免因为版本号读取失败让整个进程起不来 */
+  }
+  return "0.0.0-unknown";
+}
+
+export const VERSION = readPackageVersion();
 
 export interface McpServerOptions {
   backend: ToolBackend;
