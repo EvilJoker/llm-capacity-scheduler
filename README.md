@@ -103,6 +103,10 @@ dsh plugin --profile web add llm-capacity-scheduler-mcp
 # ③ 什么都不装：直接用 HTTP（见 §2 的 curl 版本）
 ```
 
+> 如果还没发到 npm：GitHub Release 上的 `.tgz` 资产可以直接装（同一个包既是服务也是插件）：
+> `npm install -g <asset>.tgz` / `dsh plugin --profile web add <asset-url>`，详见
+> [`RELEASING.md`](RELEASING.md) §4。
+>
 > 裸跑 `lcs-mcp`（不带子命令）= **MCP stdio + 调度器 + Web**，供客户端当子进程拉起。
 > 如果已经有常驻服务在跑，它会自动降级成 **HTTP 代理**接入同一个实例，
 > 不会出现两个进程抢写状态（这是设计，不是 bug）。
@@ -560,7 +564,7 @@ curl -s http://127.0.0.1:7788/api/status | jq '.taskCounts, .recentDecisions[0:5
 ```bash
 # 服务
 lcs-mcp start | stop | restart | status | logs -f | doctor | gc --dry-run
-lcs-mcp --version                       # 0.4.1
+lcs-mcp --version                       # 打印当前版本（取自 package.json）
 
 # 一个任务
 curl -s -X POST localhost:7788/api/tasks -H 'content-type: application/json' \
@@ -662,7 +666,14 @@ npm install && npm run build
 npm test                       # 74 个用例
 npm run dev -- serve           # tsx 直跑
 node bin/lcs-mcp.js start      # 后台常驻
+
+# 出包（本地与 CI 同一份流水线）：产物落在 dist-release/
+bash scripts/release.sh --install --verify-plugin
 ```
+
+发版走 tag：`git tag v0.4.1 && git push origin v0.4.1` 会触发
+[`.github/workflows/release.yml`](.github/workflows/release.yml) → 跑测试 → 出包 → 验证
+→ 建 GitHub Release。完整流程见 [`RELEASING.md`](RELEASING.md)。
 
 设计文档：[`docs/DSH-EXECUTION-DESIGN.md`](docs/DSH-EXECUTION-DESIGN.md)（执行器 / session / GC）、
 [`docs/DSH-PLUGIN-INTEGRATION.md`](docs/DSH-PLUGIN-INTEGRATION.md)（dsh 插件接线）、

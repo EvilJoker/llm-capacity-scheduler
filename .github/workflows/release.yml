@@ -1,0 +1,160 @@
+name: release
+
+# 只在 **tag push** 时触发（推普通 commit 不会出包）。
+# 打 tag 前请先把 mcp/package.json 的 version 改好 —— 脚本与 CI 都会校验 tag 与版本一致。
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # 创建 GitHub Release 需要
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "20"
+
+jobs:
+  # ① 先在两个 Node 版本上跑测试：tag 一旦出错会污染 release，宁可多花一分钟
+  test:
+    name: test (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        node: ["20", "22"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: mcp/package-lock.json
+
+      - name: 安装依赖（锁文件）
+        working-directory: mcp
+        run: npm ci --no-audit --no-fund
+
+      - name: 构建 + 测试
+        working-directory: mcp
+        run: npm test
+
+  # ② 出包 + 产物验证（与本地跑的是同一份 scripts/release.sh）
+  package:
+    name: build & verify artifacts
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: mcp/package-lock.json
+
+      # 插件角色验证需要 dsh + pnpm（dsh plugin 会把参数转发给 pnpm）
+      - name: 安装 dsh 与 pnpm（仅用于验证插件角色）
+        run: |
+          npm install -g pnpm @deepseek-ai/dsh
+          dsh --version
+          pnpm --version
+
+      - name: 构建 / 测试 / 打包 / 产物校验 / 冒烟 / 插件装载
+        run: bash scripts/release.sh --install --verify-plugin --expect-tag "${GITHUB_REF_NAME}"
+
+      - name: 把产物摘要写进 job summary
+        run: |
+          {
+            echo "### 产物"
+            echo
+            echo '```'
+            cat dist-release/manifest.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-release
+          path: dist-release/
+          if-no-files-found: error
+          retention-days: 14
+
+  # ③ 建 GitHub Release 并挂上产物（发布入口：release 资产 = 可直接安装的 tarball）
+  release:
+    name: publish GitHub Release
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-release
+          path: dist-release
+
+      - name: 校验 tag 与产物
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./mcp/package.json').version")"
+          if [ "${GITHUB_REF_NAME}" != "v${VERSION}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} 与 package.json 版本 v${VERSION} 不一致"
+            exit 1
+          fi
+          cd dist-release
+          sha256sum -c sha256sums.txt
+          ls -l
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+      - name: 从 CHANGELOG 生成 release notes
+        run: |
+          set -euo pipefail
+          awk -v ver="${VERSION}" '
+            /^## \[/ {
+              if (index($0, "[" ver "]")) { capture = 1; next }
+              if (capture) { exit }
+            }
+            capture { print }
+          ' mcp/CHANGELOG.md > /tmp/notes.md
+          if [ ! -s /tmp/notes.md ]; then
+            echo "Release ${GITHUB_REF_NAME}" > /tmp/notes.md
+          fi
+          {
+            echo
+            echo "## 安装"
+            echo
+            echo '```bash'
+            echo "# 当服务/CLI 用（一个包同时是 server 与 dsh 插件）"
+            echo "npm install -g ./llm-capacity-scheduler-mcp-${VERSION}.tgz"
+            echo
+            echo "# 当 dsh 插件用（装进某个 profile）"
+            echo "dsh plugin --profile web add ./llm-capacity-scheduler-mcp-${VERSION}.tgz"
+            echo '```'
+            echo
+            echo "> 校验：\`sha256sum -c sha256sums.txt\`"
+          } >> /tmp/notes.md
+          cat /tmp/notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 创建 Release 并附加产物
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" \
+            dist-release/*.tgz \
+            dist-release/sha256sums.txt \
+            dist-release/manifest.json \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file /tmp/notes.md \
+            --verify-tag

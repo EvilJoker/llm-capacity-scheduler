@@ -71,3 +71,6 @@ htmlcov/
 .DS_Store
 Thumbs.db
 .specstory
+
+# 发版产物（scripts/release.sh 输出）
+dist-release/
