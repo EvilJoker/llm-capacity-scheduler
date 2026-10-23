@@ -5,7 +5,8 @@ name: release
 on:
   push:
     tags:
-      - "v*"
+      # 只认版本 tag；v0.1-python 这类历史 tag 不会触发发版
+      - "v[0-9]+.[0-9]+.[0-9]+"
 
 permissions:
   contents: write # 创建 GitHub Release 需要
@@ -15,7 +16,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  NODE_VERSION: "20"
+  # 出包 job 用 Node 22：@deepseek-ai/dsh 0.2.1+ 的 engines 要求 node >= 22.19
+  # （用 Node 20 装得上但运行时会失败，插件验证那步会红）。
+  NODE_VERSION: "22"
 
 jobs:
   # ① 先在两个 Node 版本上跑测试：tag 一旦出错会污染 release，宁可多花一分钟
@@ -62,6 +65,7 @@ jobs:
           cache-dependency-path: mcp/package-lock.json
 
       # 插件角色验证需要 dsh + pnpm（dsh plugin 会把参数转发给 pnpm）
+      # 注意：dsh 的 engines 是 node >= 22.19，所以这个 job 必须是 Node 22
       - name: 安装 dsh 与 pnpm（仅用于验证插件角色）
         run: |
           npm install -g pnpm @deepseek-ai/dsh

@@ -148,10 +148,13 @@ fi
 # ---------------------------------------------------------------- 2. 构建 / 3. 测试
 if [ "$SKIP_TESTS" = 1 ]; then
   step "[2/7] 构建（跳过测试）"
+  # tsc 只增不删：先清掉 dist，保证本地产物与 CI（干净 checkout）一致
+  rm -rf "$PKG_DIR/dist"
   (cd "$PKG_DIR" && npm run build)
   ok "构建完成"
 else
   step "[2/7] 构建 + 测试"
+  rm -rf "$PKG_DIR/dist"
   (cd "$PKG_DIR" && npm test)
   ok "测试通过（npm test 内含构建）"
 fi
@@ -296,13 +299,24 @@ if [ "$VERIFY_PLUGIN" = 1 ]; then
   command -v dsh >/dev/null 2>&1 || die "--verify-plugin 需要 dsh 在 PATH（npm i -g @deepseek-ai/dsh）"
   command -v pnpm >/dev/null 2>&1 || die "--verify-plugin 需要 pnpm（dsh plugin 转发给它）"
 
+  ok "dsh $(dsh --version) · pnpm $(pnpm --version) · node $(node -p 'process.versions.node')"
+
   DSH_TMP_HOME="$TMP/dsh-home"
   mkdir -p "$DSH_TMP_HOME"
   if ! DSH_HOME="$DSH_TMP_HOME" dsh plugin --profile reltest add "$TARBALL" >"$TMP/plugin.log" 2>&1; then
+    echo "  --- dsh plugin 输出 ---"
     tail -40 "$TMP/plugin.log" | sed 's/^/    /'
     die "dsh plugin add 失败"
   fi
-  grep -q '"llm-capacity-scheduler-mcp"' "$DSH_TMP_HOME/profiles/reltest/package.json" ||
+  PROFILE_MANIFEST="$DSH_TMP_HOME/profiles/reltest/package.json"
+  if [ ! -f "$PROFILE_MANIFEST" ]; then
+    echo "  --- dsh plugin 输出 ---"
+    tail -40 "$TMP/plugin.log" | sed 's/^/    /'
+    echo "  --- $DSH_TMP_HOME 内容 ---"
+    find "$DSH_TMP_HOME" -maxdepth 4 2>/dev/null | sed 's/^/    /' | head -20
+    die "dsh plugin 退出码 0 但没生成 profile（$PROFILE_MANIFEST）"
+  fi
+  grep -q '"llm-capacity-scheduler-mcp"' "$PROFILE_MANIFEST" ||
     die "插件没进 profile 的 dependencies"
   ok "已安装到 profile（dependencies 已登记）"
 
