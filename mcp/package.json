@@ -1,7 +1,7 @@
 {
   "name": "llm-capacity-scheduler-mcp",
-  "version": "0.3.0",
-  "description": "容量感知异步任务调度器（MCP Server + Web 控制台 + dsh 插件）：把会过期的 LLM 配额变成有价值的产出",
+  "version": "0.4.1",
+  "description": "容量感知异步任务调度器：常驻调度服务 + dsh 执行器 + MCP Server / dsh 插件客户端，把会过期的 LLM 配额变成有价值的产出",
   "type": "module",
   "license": "MIT",
   "bin": {
@@ -13,10 +13,13 @@
     "./plugin": "./dist/plugin/index.js"
   },
   "files": [
-    "dist",
+    "dist/",
+    "!dist/test/",
     "bin",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "engines": {
     "node": ">=20"
@@ -60,5 +63,9 @@
     "@types/node": "^24.0.0",
     "tsx": "^4.20.10",
     "typescript": "^5.9.0"
+  },
+  "author": "llm-capacity-scheduler contributors",
+  "publishConfig": {
+    "access": "public"
   }
 }

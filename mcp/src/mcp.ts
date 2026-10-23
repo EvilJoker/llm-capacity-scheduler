@@ -17,7 +17,7 @@ import { z } from "zod";
 import type { ToolBackend } from "./backend.js";
 import { TOOL_SPECS, type ToolParamSpec, type ToolSpec } from "./tool-specs.js";
 
-export const VERSION = "0.3.0";
+export const VERSION = "0.4.1";
 
 export interface McpServerOptions {
   backend: ToolBackend;

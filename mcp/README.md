@@ -35,10 +35,14 @@ npx llm-capacity-scheduler-mcp --help
 ## 快速开始
 
 ```bash
-lcs-mcp init                          # 生成 ~/.lcs/config.json（已存在则不覆盖）
-lcs-mcp serve                         # 常驻：调度器 + Web 控制台（http://127.0.0.1:7788）
+lcs-mcp init                          # 生成 ~/.lcs/config.json（不预置厂商）
+lcs-mcp start                         # 后台常驻：调度器 + Web（http://127.0.0.1:7788），等健康检查通过才返回
 lcs-mcp doctor                        # 安装自检：dsh / 配置 / 凭据 / 执行器 profile / 守护进程 / 插件接线
 ```
+
+`start` 会把日志写到 `~/.lcs/logs/lcs.log`，用 `lcs-mcp logs -f` 跟随；
+`lcs-mcp status` 看是否在跑（pid / 地址 / 调度器状态），`lcs-mcp stop` 停，`lcs-mcp restart` 重启。
+`lcs-mcp serve` 是**前台**版本，给 systemd / pm2 之类的服务管理器包一层用。
 
 > 调度服务建议**常驻**（7×24）：它是唯一写状态、唯一跑调度、唯一起 dsh 子进程的进程。
 > 客户端（MCP / dsh 插件）都是它的薄客户端，挂了不影响调度，重连即可。
@@ -210,9 +214,14 @@ lcs-mcp serve --no-web             # 只跑调度器
 ## 命令行
 
 ```
-lcs-mcp [--config <path>]         MCP stdio + 调度器 + Web
-lcs-mcp serve                     常驻：调度器 + Web
-lcs-mcp init                      生成默认配置
+lcs-mcp [--config <path>]         启动：MCP stdio + 调度器 + Web（agent 接入用）
+lcs-mcp serve                     前台常驻：调度器 + Web（服务管理器包这层）
+lcs-mcp start                     后台启动常驻服务（写 pid/日志，等健康检查通过才返回）
+lcs-mcp stop                      停止后台服务（SIGTERM，10s 不退再 SIGKILL）
+lcs-mcp restart                   = stop + start
+lcs-mcp status                    在跑吗：pid / 地址 / 调度器状态
+lcs-mcp logs [-f] [--tail <n>]    后台日志（默认最后 100 行）
+lcs-mcp init                      生成初始配置（不预置厂商）
 lcs-mcp doctor                    安装自检（还差什么）
 lcs-mcp gc [--dry-run]            清理审计：预览/执行一次 GC
       --port <n>                  覆盖 Web 端口
@@ -225,7 +234,7 @@ lcs-mcp gc [--dry-run]            清理审计：预览/执行一次 GC
 ```bash
 npm install
 npm run build
-npm test                          # node:test，55 个用例（端到端烧窗口 / Web API / MCP 闭环 / 插件 / 迁移 / GC）
+npm test                          # node:test，74 个用例（端到端烧窗口 / Web API / MCP 闭环 / 插件 / 迁移 / GC / 安全校验 / 守护进程生命周期）
 npm run dev -- serve              # tsx 直跑
 ```
 
@@ -247,3 +256,7 @@ lcs-mcp gc              # 真正执行一轮
 
 任务 spec 就是本机命令，服务默认只绑定 `127.0.0.1`，MCP 走 stdio；
 配置中的 API Key 落盘 `0600`，读取接口一律脱敏。开放远程访问前请自行加鉴权与沙箱。
+
+## 许可证
+
+[MIT](LICENSE)

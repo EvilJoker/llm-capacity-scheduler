@@ -11,21 +11,25 @@
 **单语言栈**：整个产品（MCP Server / 调度器 / 执行器 / Web 控制台）都是 TypeScript + Node，
 位于 `mcp/`。v0.1 的 Python 参考实现已归档到 tag `v0.1-python` 并从主干移除。
 
-**v0.3 执行模型**：执行器只有 **dsh headless**，任务**串行**执行（一个完成再下一个）；
+**执行模型（v0.3 起，现行 v0.4.1）**：执行器只有 **dsh headless**，任务**串行**执行（一个完成再下一个）；
 每个 task 绑定一个 dsh session + 固定工作目录；「换模型」只是换 dsh 后端的大模型。
 dsh 会话写在 **专用隔离家目录** `~/.lcs/dsh-home`，与用户自己的 `~/.dsh` 物理隔离。
 设计见 [`docs/DSH-EXECUTION-DESIGN.md`](docs/DSH-EXECUTION-DESIGN.md)。
 
-**三种角色**：常驻调度服务（`lcs-mcp serve`，7×24）+ dsh 执行器（子进程）+ 客户端
+**三种角色**：常驻调度服务（`lcs-mcp start` 后台常驻，7×24）+ dsh 执行器（子进程）+ 客户端
 （MCP Server / dsh 插件，都是薄客户端）。
 
 ## 快速开始
 
 ```bash
 npm install -g llm-capacity-scheduler-mcp   # Node.js >= 20
-lcs-mcp init                                # 生成 ~/.lcs/config.json
-lcs-mcp serve                               # 常驻：调度器 + Web：http://127.0.0.1:7788
+lcs-mcp init                                # 生成 ~/.lcs/config.json（不预置厂商）
+lcs-mcp start                               # 后台常驻：调度器 + Web：http://127.0.0.1:7788
 lcs-mcp doctor                              # 自检：dsh / 配置 / 凭据 / 隔离 / 插件接线还差什么
+
+lcs-mcp status                              # 在跑吗（pid / 地址 / 调度器状态）
+lcs-mcp logs -f                             # 后台日志
+lcs-mcp stop                                # 停止
 ```
 
 dsh 里想直接用原生工具（`lcs_submit_task` 等，免手写 MCP 配置）：
@@ -160,3 +164,7 @@ npm run dev -- serve
 | v0.1 | Python 参考引擎：容量模型 / reserve / SQLite / shell runner / CLI | ✅ **已归档**（tag `v0.1-python`） |
 | **v0.2** | **TypeScript 单栈：npm MCP Server + Web 控制台 + Assignment/ModelCatalog + dsh runner + 窗口抢占/续跑** | ✅ 当前 |
 | **v0.3** | **dsh-only + 串行执行 + session 绑定 + usage 计量 + 会话保留策略**（M1–M4 已实现，M6 真机验证通过）；剩余：npm 发布、沙箱与审批、第二个厂商 | 🚧 进行中 |
+
+## 许可证
+
+[MIT](mcp/LICENSE)
